@@ -27,7 +27,23 @@ pub struct Cli {
 pub enum Command {
     /// Initialize local kbmeta state.
     Init,
+    /// Rebuild SQLite index and generate folder `index.md` files.
+    Index {
+        /// Fail if any Markdown file has invalid metadata.
+        #[arg(long)]
+        strict: bool,
+        /// Normalize tags before indexing (lowercase, trimmed, spaces to dashes).
+        #[arg(long)]
+        normalize_tags: bool,
+        /// Reindex only these document subfolders (relative to documents_root).
+        #[arg(long = "path")]
+        paths: Vec<PathBuf>,
+        /// Rewrite existing `index.md` files.
+        #[arg(long)]
+        rewrite: bool,
+    },
     /// Rebuild SQLite index from Markdown source files.
+    #[command(hide = true)]
     Rebuild {
         /// Fail if any Markdown file has invalid metadata.
         #[arg(long)]
@@ -46,6 +62,7 @@ pub enum Command {
         skip_invalid: bool,
     },
     /// Suggest metadata for one Markdown document.
+    #[command(hide = true)]
     Suggest {
         /// Path to the Markdown file, relative to workspace root or absolute.
         file: PathBuf,
@@ -68,6 +85,7 @@ pub enum Command {
         accept: bool,
     },
     /// Generate `index.md` files for document folders.
+    #[command(hide = true)]
     IndexFolders {
         /// Rewrite existing `index.md` files.
         #[arg(long)]
@@ -88,6 +106,7 @@ pub enum Command {
         backup: bool,
     },
     /// Build compact markdown context for metadata LLM input.
+    #[command(hide = true)]
     Context {
         /// Input markdown file.
         input: PathBuf,

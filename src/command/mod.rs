@@ -1,6 +1,7 @@
 mod clean;
 mod cook;
 mod context;
+mod index;
 mod index_folders;
 mod init;
 mod rebuild;
@@ -24,36 +25,57 @@ pub fn execute(
 
     match command {
         Command::Init => init::run(root, config_override.as_deref()),
-        Command::Rebuild {
+        Command::Index {
             strict,
             normalize_tags,
             paths,
-        } => rebuild::run(
+            rewrite,
+        } => index::run(
             root,
             config_override.as_deref(),
             strict,
             normalize_tags,
             &paths,
+            rewrite,
             global_dry_run,
         ),
+        Command::Rebuild {
+            strict,
+            normalize_tags,
+            paths,
+        } => {
+            eprintln!("warning: 'rebuild' is deprecated; use 'index' instead");
+            rebuild::run(
+                root,
+                config_override.as_deref(),
+                strict,
+                normalize_tags,
+                &paths,
+                global_dry_run,
+            )
+        }
         Command::Scan { skip_invalid } => scan::run(root, config_override.as_deref(), skip_invalid),
         Command::Suggest {
             file,
             action,
             edit_file,
             editor,
-        } => suggest::run(
-            root,
-            config_override.as_deref(),
-            &file,
-            action.map(map_suggest_action),
-            edit_file.as_deref(),
-            editor.as_deref(),
-        ),
+        } => {
+            eprintln!("warning: 'suggest' is deprecated; use 'cook' for interactive metadata flow");
+            suggest::run(
+                root,
+                config_override.as_deref(),
+                &file,
+                action.map(map_suggest_action),
+                edit_file.as_deref(),
+                editor.as_deref(),
+            )
+        }
         Command::Cook { input, accept } => {
             cook::run(root, config_override.as_deref(), &input, accept)
         }
         Command::IndexFolders { rewrite } => {
+            eprintln!("warning: 'index-folders' is deprecated; use 'index' instead");
             index_folders::run(root, config_override.as_deref(), rewrite, global_dry_run)
         }
         Command::Clean {
@@ -74,14 +96,17 @@ pub fn execute(
             output,
             verbose,
             backup,
-        } => context::run(
-            root,
-            &input,
-            output.as_deref(),
-            global_dry_run,
-            verbose,
-            backup,
-        ),
+        } => {
+            eprintln!("warning: 'context' is deprecated; use 'cook' instead");
+            context::run(
+                root,
+                &input,
+                output.as_deref(),
+                global_dry_run,
+                verbose,
+                backup,
+            )
+        }
     }
 }
 

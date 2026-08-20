@@ -450,6 +450,21 @@ fn index_folders_does_not_rewrite_without_flag() {
 }
 
 #[test]
+fn index_runs_rebuild_and_folder_generation() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let out = run_kbmeta(ws.path(), &["index"]);
+    assert!(out.status.success(), "index failed: {}", stderr_text(&out));
+
+    let index_path = ws.path().join("knowledge/documents/index.md");
+    assert!(index_path.exists(), "folder index should be generated");
+    assert_eq!(read_documents_count(ws.path()), 2);
+}
+
+#[test]
 fn global_dry_run_prevents_rebuild_writes() {
     let ws = fixture_to_tempdir("kb_minimal");
 

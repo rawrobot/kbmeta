@@ -3,8 +3,9 @@
 ## Goals
 
 - Make command internals composable so multi-step workflows do not duplicate logic.
-- Keep single-step commands (`clean`, `context`, `suggest`) intact for debugging and targeted use.
+- Keep only task-native commands in primary UX while preserving selected low-level tools for advanced use.
 - Provide a one-shot command (`cook`) that produces KB-ready output without modifying input.
+- Provide a single indexing command (`index`) that runs DB indexing and folder index generation.
 - Keep all relative-path behavior deterministic by resolving from command `--root`.
 - Keep LLM behavior configurable with root-local prompt files and safe fallback behavior.
 
@@ -15,16 +16,15 @@ flowchart LR
     CLI[CLI Parser] --> CMD[Command Dispatcher]
 
     CMD --> C1[clean command]
-    CMD --> C2[context command]
-    CMD --> C3[suggest command]
-    CMD --> C4[cook command]
-    CMD --> C5[rebuild command]
-    CMD --> C6[index-folders command]
+    CMD --> C2[cook command]
+    CMD --> C3[index command]
+    CMD --> C4[scan command]
+    CMD --> C5[deprecated command adapters]
 
     C1 --> OPS[Pipeline Operations]
     C2 --> OPS
     C3 --> OPS
-    C4 --> OPS
+    C5 --> OPS
 
     OPS --> DOC[document module]
     OPS --> PROV[provider module]
@@ -154,6 +154,28 @@ classDiagram
 
 ## Command Policy
 
+Primary native commands:
+
+- `init`
+- `cook`
+- `index`
+- `scan`
+- `clean`
+
+Deprecated-but-compatible commands in Phase 1:
+
+- `rebuild` (use `index`)
+- `index-folders` (use `index`)
+- `context` (use `cook`)
+- `suggest` (use `cook`)
+
+Deprecation policy:
+
+- deprecated commands are hidden from top-level help
+- deprecated commands remain runnable for one compatibility cycle
+- invoking a deprecated command prints a migration warning
+- Phase 2 removes deprecated command entry points
+
 - `cook` is non-destructive for source input.
 - `cook` defaults to interactive review (accept/edit/reject prompt).
 - batch/non-interactive mode uses explicit `--accept` (or `-a`).
@@ -170,7 +192,17 @@ classDiagram
 - optional intermediates are controlled by config (`keep_intermediate`).
 - `--dry-run` is a global flag at CLI root and applies to mutation commands.
 
-## Rebuild Policy
+## Index Policy
+
+- `index` is the native indexing entry point.
+- `index` orchestrates:
+- DB index refresh (full or scoped)
+- folder `index.md` generation
+- `index --path <dir>` can be repeated to reindex selected folders only.
+- `index --rewrite` rewrites existing folder `index.md` files.
+- when `--dry-run` is set globally, both indexing phases are preview-only.
+
+## Rebuild Engine Policy
 
 - `rebuild` without scope remains full refresh behavior.
 - `rebuild --path <dir>` can be repeated to reindex selected folders only.
@@ -183,7 +215,7 @@ classDiagram
 
 ```mermaid
 flowchart TD
-  A[rebuild --path ...] --> B[discover docs under scopes]
+  A[index --path ...] --> B[discover docs under scopes]
   B --> C[load existing scoped docs + hashes]
   C --> D{hash changed?}
   D -- no --> E[skip unchanged]
@@ -195,6 +227,12 @@ flowchart TD
   F --> J[cleanup orphan vocab]
   I --> J
 ```
+
+## Phase 2 Plan
+
+- remove `rebuild`, `index-folders`, `context`, and `suggest` from CLI surface
+- keep internal modules reusable for `cook` and `index`
+- retain migration guidance in docs for one more release after removal
 
 ## Config Model
 
@@ -230,5 +268,5 @@ Default separation:
 
 - Composition: one code path for reusable operations.
 - Testability: each operation can be tested independently.
-- UX: one human-focused command (`cook`) while preserving granular commands.
+- UX: task-oriented native interface reduces command sprawl and confusion.
 - Extensibility: new pipelines can be built by reusing operation traits.
