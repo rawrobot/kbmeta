@@ -1,0 +1,7 @@
+documents_root = "knowledge/documents"
+
+[provider]
+kind = "mock"
+endpoint = "http://localhost:8000/v1/chat/completions"
+model = "meta/llama-3.1-8b-instruct"
+timeout_seconds = 60
