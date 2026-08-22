@@ -1,5 +1,4 @@
-use crate::command::open_db;
-use crate::config::Config;
+use crate::command::prelude::CommandContext;
 use crate::document::Document;
 use crate::document::discovery::DiscoverWarning;
 use crate::document::metadata_block::{missing_recommended_fields, missing_required_fields};
@@ -68,12 +67,12 @@ fn check_staleness(conn: &rusqlite::Connection, doc: &Document) -> Result<bool> 
 }
 
 /// Handles `kbmeta scan`.
-pub(crate) fn run(root: &Path, config_override: Option<&Path>, skip_invalid: bool) -> Result<()> {
-    let cfg = Config::load_with(root, config_override)?;
-    let docs_root = resolve_from_root(root, &cfg.documents_root);
+pub(crate) fn run(ctx: &CommandContext, skip_invalid: bool) -> Result<()> {
+    let cfg = ctx.load_config()?;
+    let docs_root = resolve_from_root(ctx.root(), &cfg.documents_root);
     let (docs, warnings) = discover(&docs_root, skip_invalid)?;
 
-    let conn = open_db(root)?;
+    let conn = ctx.open_db()?;
     let mut stale = 0usize;
     let mut missing = 0usize;
     let mut hard_errors = Vec::new();

@@ -68,6 +68,9 @@ fn discover_impl(root: &Path, mode: DiscoverMode) -> Result<DiscoverReport> {
         if path.extension().and_then(|x| x.to_str()) != Some("md") {
             continue;
         }
+        if path.file_name().and_then(|x| x.to_str()) == Some("index.md") {
+            continue;
+        }
 
         match load_document(path) {
             Ok(doc) => docs.push(doc),

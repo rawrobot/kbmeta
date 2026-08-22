@@ -42,19 +42,7 @@ pub enum Command {
         #[arg(long)]
         rewrite: bool,
     },
-    /// Rebuild SQLite index from Markdown source files.
-    #[command(hide = true)]
-    Rebuild {
-        /// Fail if any Markdown file has invalid metadata.
-        #[arg(long)]
-        strict: bool,
-        /// Normalize tags before indexing (lowercase, trimmed, spaces to dashes).
-        #[arg(long)]
-        normalize_tags: bool,
-        /// Reindex only these document subfolders (relative to documents_root).
-        #[arg(long = "path")]
-        paths: Vec<PathBuf>,
-    },
+
     /// Scan documents and report missing/stale metadata.
     Scan {
         /// Skip invalid metadata documents and report warnings instead of failing.
@@ -97,21 +85,7 @@ pub enum Command {
         #[arg(short = 'j', long)]
         json: bool,
     },
-    /// Suggest metadata for one Markdown document.
-    #[command(hide = true)]
-    Suggest {
-        /// Path to the Markdown file, relative to workspace root or absolute.
-        file: PathBuf,
-        /// Optional non-interactive action for CI or scripted runs.
-        #[arg(long, value_enum)]
-        action: Option<SuggestActionArg>,
-        /// YAML file used when action is edit.
-        #[arg(long)]
-        edit_file: Option<PathBuf>,
-        /// Editor command used for interactive edit mode.
-        #[arg(long)]
-        editor: Option<String>,
-    },
+
     /// One-shot pipeline: clean -> context -> suggest -> kb-ready output.
     Cook {
         /// Input markdown file.
@@ -120,13 +94,7 @@ pub enum Command {
         #[arg(short = 'a', long)]
         accept: bool,
     },
-    /// Generate `index.md` files for document folders.
-    #[command(hide = true)]
-    IndexFolders {
-        /// Rewrite existing `index.md` files.
-        #[arg(long)]
-        rewrite: bool,
-    },
+
     /// Clean a markdown document using source-specific policy.
     Clean {
         /// Input markdown file.
@@ -141,32 +109,7 @@ pub enum Command {
         #[arg(long)]
         backup: bool,
     },
-    /// Build compact markdown context for metadata LLM input.
-    #[command(hide = true)]
-    Context {
-        /// Input markdown file.
-        input: PathBuf,
-        /// Output directory for llm context file.
-        #[arg(long)]
-        output: Option<PathBuf>,
-        /// Show extra processing details.
-        #[arg(long)]
-        verbose: bool,
-        /// Write a backup copy of the input markdown near outputs.
-        #[arg(long)]
-        backup: bool,
-    },
-}
 
-/// Review decision for a metadata suggestion.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum SuggestActionArg {
-    /// Accept suggestion and write metadata.
-    Accept,
-    /// Edit suggestion before writing metadata.
-    Edit,
-    /// Reject suggestion and keep document unchanged.
-    Reject,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

@@ -1,3 +1,4 @@
+use crate::command::prelude::{CommandContext, MetadataAction, apply_edit, decide_action, print_yaml};
 use crate::config::Config;
 use crate::document::metadata_block::{missing_required_fields, upsert_metadata_block};
 use crate::pathing::resolve_from_root;
@@ -6,21 +7,15 @@ use crate::pipeline::{
     rebuild_index_after_write, run_cook, write_intermediate_artifacts,
 };
 use crate::provider::apply_rules;
-use crate::command::suggest::{SuggestAction, apply_edit, decide_action, print_yaml};
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 /// Handles `kbmeta cook`.
-pub(crate) fn run(
-    root: &Path,
-    config_override: Option<&Path>,
-    input: &Path,
-    accept: bool,
-) -> Result<()> {
-    let cfg = Config::load_with(root, config_override)?;
-    let input_path = resolve_from_root(root, input);
+pub(crate) fn run(ctx: &CommandContext, input: &Path, accept: bool) -> Result<()> {
+    let cfg = ctx.load_config()?;
+    let input_path = resolve_from_root(ctx.root(), input);
 
     if cfg.provider.kind.trim().eq_ignore_ascii_case("mock") {
         eprintln!(
@@ -33,7 +28,7 @@ pub(crate) fn run(
     let suggest_op = DefaultSuggestOperation;
 
     let mut cooked = run_cook(
-        root,
+        ctx.root(),
         &cfg,
         &input_path,
         &clean_op,
@@ -57,7 +52,7 @@ pub(crate) fn run(
     print_yaml(&cooked.metadata)?;
 
     let decision = if accept {
-        SuggestAction::Accept
+        MetadataAction::Accept
     } else {
         if !std::io::stdin().is_terminal() {
             bail!("cook requires interactive TTY unless --accept is set for batch mode");
@@ -65,27 +60,27 @@ pub(crate) fn run(
         decide_action(None)?
     };
 
-    if handle_decision(decision, &mut cooked, root, &cfg)? {
+    if handle_decision(decision, &mut cooked, ctx.root(), &cfg)? {
         return Ok(());
     }
 
-    write_output(&cooked, root, &cfg, accept)?;
+    write_output(&cooked, ctx.root(), &cfg, accept)?;
     println!("kb-ready markdown: {}", cooked.output_path.display());
     Ok(())
 }
 
 fn handle_decision(
-    decision: SuggestAction,
+    decision: MetadataAction,
     cooked: &mut CookArtifacts,
     root: &Path,
     cfg: &Config,
 ) -> Result<bool> {
     match decision {
-        SuggestAction::Reject => {
+        MetadataAction::Reject => {
             println!("Suggestion rejected. No changes written.");
             return Ok(true);
         }
-        SuggestAction::Edit => {
+        MetadataAction::Edit => {
             let edited = apply_edit(
                 root,
                 cooked.metadata.clone(),
@@ -103,7 +98,7 @@ fn handle_decision(
             }
             cooked.final_markdown = upsert_metadata_block(&cooked.clean.markdown, &cooked.metadata)?;
         }
-        SuggestAction::Accept => {}
+        MetadataAction::Accept => {}
     }
     Ok(false)
 }

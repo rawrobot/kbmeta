@@ -1,13 +1,13 @@
-use crate::command::open_db;
+use crate::command::prelude::{CommandContext, prompt_yn};
 use crate::config::Config;
 use anyhow::Result;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::Path;
 
 /// Handles `kbmeta init`.
-pub(crate) fn run(root: &Path, config_override: Option<&Path>) -> Result<()> {
-    let kb_dir = Config::kb_dir(root);
+pub(crate) fn run(ctx: &CommandContext) -> Result<()> {
+    let kb_dir = Config::kb_dir(ctx.root());
     if kb_dir.exists() {
         if !should_rewrite_kb_dir(&kb_dir)? {
             println!("Skipped init. Existing {} was kept.", kb_dir.display());
@@ -16,16 +16,16 @@ pub(crate) fn run(root: &Path, config_override: Option<&Path>) -> Result<()> {
         fs::remove_dir_all(&kb_dir)?;
     }
 
-    Config::write_default_with(root, config_override)?;
-    ensure_default_cook_prompt(root)?;
-    let _conn = open_db(root)?;
+    Config::write_default_with(ctx.root(), ctx.config_override())?;
+    ensure_default_cook_prompt(ctx.root())?;
+    let _conn = ctx.open_db()?;
 
     println!("Initialized kbmeta state in {}", kb_dir.display());
     Ok(())
 }
 
 fn should_rewrite_kb_dir(kb_dir: &Path) -> Result<bool> {
-    if !io::stdin().is_terminal() {
+    if !std::io::stdin().is_terminal() {
         eprintln!(
             "note: {} already exists; non-interactive init keeps existing .kb (no rewrite)",
             kb_dir.display()
@@ -33,16 +33,7 @@ fn should_rewrite_kb_dir(kb_dir: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    print!(
-        "{} already exists. Rewrite existing .kb folder? [y/N]: ",
-        kb_dir.display()
-    );
-    io::stdout().flush()?;
-
-    let mut buf = String::new();
-    io::stdin().read_line(&mut buf)?;
-    let answer = buf.trim().to_ascii_lowercase();
-    Ok(answer == "y" || answer == "yes")
+    prompt_yn(&format!("{} already exists. Rewrite existing .kb folder?", kb_dir.display()))
 }
 
 fn ensure_default_cook_prompt(root: &Path) -> Result<()> {
