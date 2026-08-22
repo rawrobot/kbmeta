@@ -6,12 +6,14 @@ mod document;
 mod pathing;
 mod pipeline;
 mod provider;
+mod query;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::Cli;
 
 fn main() -> Result<()> {
+    env_logger::init();
     let cli = Cli::parse();
     command::execute(&cli.root, cli.config.as_deref(), cli.dry_run, cli.command)
 }

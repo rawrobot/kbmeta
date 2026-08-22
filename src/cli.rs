@@ -61,6 +61,42 @@ pub enum Command {
         #[arg(long)]
         skip_invalid: bool,
     },
+    /// Query indexed documents with metadata filters.
+    Query {
+        /// Filter by type (exact match).
+        #[arg(short = 't', long)]
+        doc_type: Option<String>,
+        /// Tag expression, e.g. "+debug,rust,-wip".
+        #[arg(short = 'g', long = "tag")]
+        tags: Option<String>,
+        /// Topic expression, e.g. "+rust,concurrency".
+        #[arg(short = 'o', long = "topic")]
+        topics: Option<String>,
+        /// Technology expression.
+        #[arg(short = 'k', long = "tech")]
+        technologies: Option<String>,
+        /// Language expression.
+        #[arg(short = 'l', long = "lang")]
+        languages: Option<String>,
+        /// Case-insensitive title substring match.
+        #[arg(short = 'n', long)]
+        title: Option<String>,
+        /// Output format.
+        #[arg(short = 'f', long, value_enum, default_value_t = QueryFormatArg::Files)]
+        format: QueryFormatArg,
+        /// Fields to print for csv/table/json (comma-separated).
+        #[arg(short = 'F', long)]
+        fields: Option<String>,
+        /// Limit number of results.
+        #[arg(short = 'L', long)]
+        limit: Option<usize>,
+        /// Return non-zero when no results match.
+        #[arg(long)]
+        fail_empty: bool,
+        /// Shortcut for JSON output (same as --format json).
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
     /// Suggest metadata for one Markdown document.
     #[command(hide = true)]
     Suggest {
@@ -131,4 +167,13 @@ pub enum SuggestActionArg {
     Edit,
     /// Reject suggestion and keep document unchanged.
     Reject,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum QueryFormatArg {
+    Files,
+    Csv,
+    Table,
+    Json,
+    Markdown,
 }
