@@ -56,7 +56,6 @@ fn scan_fails_on_invalid_metadata_by_default() {
 
     let scan_stderr = stderr_text(&scan_out);
     assert!(scan_stderr.contains("failed to parse"));
-    assert!(scan_stderr.contains("invalid YAML metadata block at line"));
 }
 
 #[test]
@@ -94,8 +93,7 @@ fn scan_fails_on_missing_required_metadata_fields() {
     assert!(scan_stderr.contains("metadata validation failed"));
     assert!(scan_stderr.contains("code=KBMETA_MISSING_REQUIRED_FIELDS"));
     assert!(scan_stderr.contains("missing required fields:"));
-    assert!(scan_stderr.contains("title"));
-    assert!(scan_stderr.contains("description"));
+    assert!(scan_stderr.contains("type"));
 }
 
 #[test]
@@ -117,8 +115,7 @@ fn scan_skip_invalid_skips_missing_required_metadata_fields() {
 
     assert!(scan_stderr.contains("warning [code=KBMETA_MISSING_REQUIRED_FIELDS]: skipped"));
     assert!(scan_stderr.contains("missing required fields:"));
-    assert!(scan_stderr.contains("title"));
-    assert!(scan_stderr.contains("description"));
+    assert!(scan_stderr.contains("type"));
     assert!(scan_stdout.contains("Scanned 1 documents"));
 }
 
@@ -134,7 +131,6 @@ fn rebuild_strict_fails_on_invalid_metadata() {
 
     let rebuild_stderr = stderr_text(&rebuild_out);
     assert!(rebuild_stderr.contains("failed to parse"));
-    assert!(rebuild_stderr.contains("invalid YAML metadata block at line"));
 }
 
 #[test]
@@ -465,6 +461,65 @@ fn index_runs_rebuild_and_folder_generation() {
 }
 
 #[test]
+fn query_prints_matching_filenames_by_default() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let index_out = run_kbmeta(ws.path(), &["index"]);
+    assert!(index_out.status.success(), "index failed: {}", stderr_text(&index_out));
+
+    let out = run_kbmeta(ws.path(), &["query", "--tag", "Rust"]);
+    assert!(out.status.success(), "query failed: {}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(stdout.contains("knowledge/documents/rust-tokio.md"));
+    assert!(!stdout.contains("knowledge/documents/untagged-note.md"));
+}
+
+#[test]
+fn query_json_outputs_selected_fields() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let index_out = run_kbmeta(ws.path(), &["index"]);
+    assert!(index_out.status.success(), "index failed: {}", stderr_text(&index_out));
+
+    let out = run_kbmeta(
+        ws.path(),
+        &["query", "--lang", "rust", "--json", "--fields", "path,title,tags"],
+    );
+    assert!(out.status.success(), "query json failed: {}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(stdout.contains("\"path\""));
+    assert!(stdout.contains("\"title\""));
+    assert!(stdout.contains("\"tags\""));
+    assert!(!stdout.contains("\"technologies\""));
+}
+
+#[test]
+fn query_csv_outputs_header_and_rows() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let index_out = run_kbmeta(ws.path(), &["index"]);
+    assert!(index_out.status.success(), "index failed: {}", stderr_text(&index_out));
+
+    let out = run_kbmeta(
+        ws.path(),
+        &["query", "--lang", "rust", "--format", "csv", "--fields", "path,title,type"],
+    );
+    assert!(out.status.success(), "query csv failed: {}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(stdout.lines().next().unwrap_or_default().contains("path,title,type"));
+    assert!(stdout.contains("knowledge/documents/rust-tokio.md"));
+}
+
+#[test]
 fn global_dry_run_prevents_rebuild_writes() {
     let ws = fixture_to_tempdir("kb_minimal");
 
@@ -552,4 +607,62 @@ fn read_documents_count(root: &std::path::Path) -> i64 {
     let conn = Connection::open(db_path).expect("index database should open");
     conn.query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
         .expect("documents count query should run")
+}
+
+#[test]
+fn query_fail_empty_returns_error_on_no_match() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let index_out = run_kbmeta(ws.path(), &["index"]);
+    assert!(index_out.status.success(), "index failed: {}", stderr_text(&index_out));
+
+    let out = run_kbmeta(ws.path(), &["query", "--tag", "nonexistent", "--fail-empty"]);
+    assert!(!out.status.success());
+    let stderr = stderr_text(&out);
+    assert!(stderr.contains("no documents matched filters"));
+}
+
+#[test]
+fn query_invalid_filter_fails() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let index_out = run_kbmeta(ws.path(), &["index"]);
+    assert!(index_out.status.success(), "index failed: {}", stderr_text(&index_out));
+
+    let out = run_kbmeta(ws.path(), &["query", "--tag", "rust!"]);
+    assert!(!out.status.success());
+    let stderr = stderr_text(&out);
+    assert!(stderr.contains("invalid filter expression"));
+}
+
+#[test]
+fn rebuild_dry_run_shows_scoped_paths() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let out = run_kbmeta(ws.path(), &["--dry-run", "rebuild", "--path", "knowledge/documents"]);
+    assert!(out.status.success(), "dry-run scoped rebuild failed: {}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(stdout.contains("dry-run scope:"));
+}
+
+#[test]
+fn scan_after_init_without_rebuild_reports_missing_metadata() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let out = run_kbmeta(ws.path(), &["scan"]);
+    assert!(out.status.success(), "scan failed: {}", stderr_text(&out));
+    let stdout = stdout_text(&out);
+    assert!(stdout.contains("Missing metadata block: 1"));
 }

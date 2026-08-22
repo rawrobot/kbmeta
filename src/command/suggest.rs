@@ -1,7 +1,7 @@
 use crate::command::open_db;
 use crate::config::Config;
 use crate::database::rebuild::RebuildOptions;
-use crate::document::metadata_block::{MetadataBlock, missing_required_fields, to_yaml, upsert_metadata_block};
+use crate::document::metadata_block::{missing_required_fields, to_yaml, upsert_metadata_block};
 use crate::pathing::resolve_from_root;
 use crate::pipeline::{DefaultSuggestOperation, SuggestOperation};
 use crate::provider::{apply_rules, build_provider, derive_rules};
@@ -29,6 +29,7 @@ pub(crate) fn run(
     edit_file: Option<&Path>,
     editor_override: Option<&str>,
 ) -> Result<()> {
+    eprintln!("warning: 'suggest' is deprecated; use 'cook' for interactive metadata flow");
     let cfg = Config::load_with(root, config_override)?;
     let doc_path = resolve_from_root(root, file);
     let edit_path = edit_file.map(|p| resolve_from_root(root, p));
@@ -118,15 +119,15 @@ pub(crate) fn decide_action(action: Option<SuggestAction>) -> Result<SuggestActi
 
 pub(crate) fn apply_edit(
     root: &Path,
-    current: MetadataBlock,
+    current: okf::Frontmatter,
     edit_file: Option<&Path>,
     editor_override: Option<&str>,
     config_editor: Option<&str>,
-) -> Result<MetadataBlock> {
+) -> Result<okf::Frontmatter> {
     if let Some(edit_file) = edit_file {
         let edited = fs::read_to_string(edit_file)
             .with_context(|| format!("failed to read {}", edit_file.display()))?;
-        let metadata = serde_yaml::from_str::<MetadataBlock>(&edited)
+        let metadata = parse_yaml_as_frontmatter(&edited)
             .with_context(|| format!("invalid YAML in {}", edit_file.display()))?;
         return Ok(metadata);
     }
@@ -146,7 +147,7 @@ pub(crate) fn apply_edit(
 
         let edited = fs::read_to_string(&tmp)
             .with_context(|| format!("failed to read {}", tmp.display()))?;
-        let parsed = serde_yaml::from_str::<MetadataBlock>(&edited);
+        let parsed = parse_yaml_as_frontmatter(&edited);
 
         match parsed {
             Ok(metadata) => {
@@ -162,16 +163,7 @@ pub(crate) fn apply_edit(
                 );
             }
             Err(err) => {
-                if let Some(loc) = err.location() {
-                    eprintln!(
-                        "edited YAML is invalid at line {}, column {}: {}",
-                        loc.line(),
-                        loc.column(),
-                        err
-                    );
-                } else {
-                    eprintln!("edited YAML is invalid: {}", err);
-                }
+                eprintln!("edited YAML is invalid: {}", err);
             }
         }
 
@@ -180,6 +172,19 @@ pub(crate) fn apply_edit(
             bail!("edit aborted after invalid metadata");
         }
     }
+}
+
+fn parse_yaml_as_frontmatter(yaml: &str) -> Result<okf::Frontmatter> {
+    let doc = okf::Document::parse(yaml)
+        .map_err(|e| anyhow::anyhow!("invalid YAML: {}", e))?;
+    if !doc.frontmatter.is_empty() {
+        return Ok(doc.frontmatter);
+    }
+    let val = okf::Value::parse(yaml.trim())
+        .map_err(|e| anyhow::anyhow!("invalid YAML: {}", e))?;
+    let mapping = val.as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("edited YAML is not a mapping"))?;
+    Ok(okf::Frontmatter::from_mapping(mapping.clone()))
 }
 
 fn resolve_editor(editor_override: Option<&str>, config_editor: Option<&str>) -> String {
@@ -240,7 +245,7 @@ fn temp_edit_path(root: &Path) -> PathBuf {
     root.join(format!(".kb/suggest-edit-{}-{}.yaml", std::process::id(), nanos))
 }
 
-pub(crate) fn print_yaml(metadata: &MetadataBlock) -> Result<()> {
+pub(crate) fn print_yaml(metadata: &okf::Frontmatter) -> Result<()> {
     let yaml = to_yaml(metadata)?;
     println!("{}", yaml.trim_end());
     Ok(())

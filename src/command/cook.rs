@@ -2,8 +2,8 @@ use crate::config::Config;
 use crate::document::metadata_block::{missing_required_fields, upsert_metadata_block};
 use crate::pathing::resolve_from_root;
 use crate::pipeline::{
-    DefaultCleanOperation, DefaultContextOperation, DefaultSuggestOperation, rebuild_index_after_write,
-    run_cook, write_intermediate_artifacts,
+    CookArtifacts, DefaultCleanOperation, DefaultContextOperation, DefaultSuggestOperation,
+    rebuild_index_after_write, run_cook, write_intermediate_artifacts,
 };
 use crate::provider::apply_rules;
 use crate::command::suggest::{SuggestAction, apply_edit, decide_action, print_yaml};
@@ -65,10 +65,25 @@ pub(crate) fn run(
         decide_action(None)?
     };
 
+    if handle_decision(decision, &mut cooked, root, &cfg)? {
+        return Ok(());
+    }
+
+    write_output(&cooked, root, &cfg, accept)?;
+    println!("kb-ready markdown: {}", cooked.output_path.display());
+    Ok(())
+}
+
+fn handle_decision(
+    decision: SuggestAction,
+    cooked: &mut CookArtifacts,
+    root: &Path,
+    cfg: &Config,
+) -> Result<bool> {
     match decision {
         SuggestAction::Reject => {
             println!("Suggestion rejected. No changes written.");
-            return Ok(());
+            return Ok(true);
         }
         SuggestAction::Edit => {
             let edited = apply_edit(
@@ -90,7 +105,10 @@ pub(crate) fn run(
         }
         SuggestAction::Accept => {}
     }
+    Ok(false)
+}
 
+fn write_output(cooked: &CookArtifacts, root: &Path, cfg: &Config, accept: bool) -> Result<()> {
     if cooked.output_path.exists() {
         if accept {
             bail!(
@@ -120,12 +138,10 @@ pub(crate) fn run(
             .file_stem()
             .map(|x| x.to_string_lossy().to_string())
             .unwrap_or_else(|| "document".to_string());
-        write_intermediate_artifacts(root, &base_name, &cooked)?;
+        write_intermediate_artifacts(root, &base_name, cooked)?;
     }
 
-    rebuild_index_after_write(root, &cfg)?;
-
-    println!("kb-ready markdown: {}", cooked.output_path.display());
+    rebuild_index_after_write(root, cfg)?;
     Ok(())
 }
 

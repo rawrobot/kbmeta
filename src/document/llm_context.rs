@@ -1,3 +1,4 @@
+use crate::document::noise::is_noise_line;
 use anyhow::Result;
 
 /// Compact markdown intended as metadata-LLM input.
@@ -142,18 +143,6 @@ fn is_structural_line(line: &str) -> bool {
     }
 
     false
-}
-
-fn is_noise_line(line: &str) -> bool {
-    let l = line.to_ascii_lowercase();
-    let short = l.len() <= 140;
-
-    short
-        && (l.contains("follow me")
-            || l.contains("sponsor")
-            || l.contains("published in")
-            || l.contains("member-only story")
-            || l.contains("clap"))
 }
 
 fn is_technical_line(line: &str) -> bool {

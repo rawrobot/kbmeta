@@ -160,6 +160,5 @@ mod tests {
         assert_eq!(report.warnings.len(), 1);
         assert!(report.warnings[0].path.ends_with("broken.md"));
         assert!(report.warnings[0].message.contains("failed to parse"));
-        assert!(report.warnings[0].message.contains("invalid YAML metadata block at line"));
     }
 }

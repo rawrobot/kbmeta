@@ -8,6 +8,8 @@ pub mod metadata_block;
 pub mod markdown;
 /// Deterministic builder for reduced metadata-LLM context markdown.
 pub mod llm_context;
+/// Shared noise detection patterns used by cleaner and context builder.
+pub mod noise;
 /// Content hashing helpers used for stale-index detection.
 pub mod hashing;
 
@@ -19,7 +21,7 @@ pub struct Document {
     /// Absolute or workspace-relative path to the source Markdown file.
     pub path: PathBuf,
     /// Parsed YAML metadata block, if present and valid.
-    pub metadata: Option<metadata_block::MetadataBlock>,
+    pub metadata: Option<okf::Frontmatter>,
     /// SHA-256 hash of full file content for change detection.
     pub content_hash: String,
 }

@@ -1,5 +1,4 @@
 ---
-type: Reference
 title: "   "
 tags:
   - rust

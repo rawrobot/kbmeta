@@ -12,6 +12,7 @@ pub(crate) fn run(
     rewrite: bool,
     dry_run: bool,
 ) -> Result<()> {
+    eprintln!("warning: 'index-folders' is deprecated; use 'index' instead");
     let cfg = Config::load_with(root, config_override)?;
     let docs_root = resolve_from_root(root, &cfg.documents_root);
 
@@ -39,14 +40,17 @@ pub(crate) fn run(
         let title = doc
             .metadata
             .as_ref()
-            .and_then(|m| m.title.clone())
+            .and_then(|m| m.title().map(|cow| cow.into_owned()))
             .unwrap_or_else(|| file_stem_fallback(&doc.path));
         let doc_type = doc
             .metadata
             .as_ref()
-            .and_then(|m| m.doc_type.clone())
+            .and_then(|m| m.type_().map(|cow| cow.into_owned()))
             .unwrap_or_else(|| "Unknown".to_string());
-        let description = doc.metadata.as_ref().and_then(|m| m.description.clone());
+        let description = doc
+            .metadata
+            .as_ref()
+            .and_then(|m| m.description().map(|cow| cow.into_owned()));
 
         by_dir.entry(parent.to_path_buf()).or_default().push(DocRow {
             file_name,

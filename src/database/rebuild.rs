@@ -63,9 +63,9 @@ pub fn rebuild_index(conn: &mut Connection, docs: &[Document], opts: RebuildOpti
              VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 doc.path.to_string_lossy().to_string(),
-                fm.and_then(|x| x.title.as_deref()),
-                fm.and_then(|x| x.description.as_deref()),
-                fm.and_then(|x| x.doc_type.as_deref()),
+                fm.and_then(|x| x.title().map(|cow| cow.into_owned())),
+                fm.and_then(|x| x.description().map(|cow| cow.into_owned())),
+                fm.and_then(|x| x.type_().map(|cow| cow.into_owned())),
                 doc.content_hash,
                 indexed_at_utc(),
             ],
@@ -80,17 +80,17 @@ pub fn rebuild_index(conn: &mut Connection, docs: &[Document], opts: RebuildOpti
 
         if let Some(fm) = fm {
             let tags = if opts.normalize_tags {
-                normalize_values(&fm.tags)
+                normalize_values(&fm.tags())
             } else {
-                fm.tags.clone()
+                fm.tags()
             };
 
             insert_many(&tx, doc_id, &tags, "tags", "document_tags", "tag_id")?;
-            insert_many(&tx, doc_id, &fm.topics, "topics", "document_topics", "topic_id")?;
+            insert_many(&tx, doc_id, &crate::document::metadata_block::get_topics(fm), "topics", "document_topics", "topic_id")?;
             insert_many(
                 &tx,
                 doc_id,
-                &fm.technologies,
+                &crate::document::metadata_block::get_technologies(fm),
                 "technologies",
                 "document_technologies",
                 "technology_id",
@@ -98,7 +98,7 @@ pub fn rebuild_index(conn: &mut Connection, docs: &[Document], opts: RebuildOpti
             insert_many(
                 &tx,
                 doc_id,
-                &fm.languages,
+                &crate::document::metadata_block::get_languages(fm),
                 "languages",
                 "document_languages",
                 "language_id",
@@ -157,16 +157,16 @@ pub fn rebuild_index_scoped(
 
         if let Some(fm) = doc.metadata.as_ref() {
             let tags = if opts.normalize_tags {
-                normalize_values(&fm.tags)
+                normalize_values(&fm.tags())
             } else {
-                fm.tags.clone()
+                fm.tags()
             };
             insert_many(&tx, doc_id, &tags, "tags", "document_tags", "tag_id")?;
-            insert_many(&tx, doc_id, &fm.topics, "topics", "document_topics", "topic_id")?;
+            insert_many(&tx, doc_id, &crate::document::metadata_block::get_topics(fm), "topics", "document_topics", "topic_id")?;
             insert_many(
                 &tx,
                 doc_id,
-                &fm.technologies,
+                &crate::document::metadata_block::get_technologies(fm),
                 "technologies",
                 "document_technologies",
                 "technology_id",
@@ -174,7 +174,7 @@ pub fn rebuild_index_scoped(
             insert_many(
                 &tx,
                 doc_id,
-                &fm.languages,
+                &crate::document::metadata_block::get_languages(fm),
                 "languages",
                 "document_languages",
                 "language_id",
@@ -207,9 +207,9 @@ fn insert_document(
          VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             doc.path.to_string_lossy().to_string(),
-            fm.and_then(|x| x.title.as_deref()),
-            fm.and_then(|x| x.description.as_deref()),
-            fm.and_then(|x| x.doc_type.as_deref()),
+            fm.and_then(|x| x.title().map(|cow| cow.into_owned())),
+            fm.and_then(|x| x.description().map(|cow| cow.into_owned())),
+            fm.and_then(|x| x.type_().map(|cow| cow.into_owned())),
             doc.content_hash,
             indexed_at_utc(),
         ],

@@ -14,6 +14,7 @@ pub(crate) fn run(
     verbose: bool,
     backup: bool,
 ) -> Result<()> {
+    eprintln!("warning: 'context' is deprecated; use 'cook' instead");
     let input_path = resolve_from_root(root, input);
     let original = fs::read_to_string(&input_path)
         .with_context(|| format!("failed to read {}", input_path.display()))?;

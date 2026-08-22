@@ -3,7 +3,7 @@ use crate::database::rebuild::{RebuildOptions, rebuild_index};
 use crate::document::cleaner::{CleanDocument, clean_document};
 use crate::document::llm_context::{ContextBuilder, DefaultLlmContextBuilder, LlmContext};
 use crate::document::markdown::generate_filename_with_limit;
-use crate::document::metadata_block::{MetadataBlock, missing_required_fields, to_yaml, upsert_metadata_block};
+use crate::document::metadata_block::{missing_required_fields, to_yaml, upsert_metadata_block};
 use crate::pathing::resolve_from_root;
 use crate::provider::{MetadataProvider, SuggestionRules, apply_rules, build_provider, derive_rules};
 use anyhow::{Context, Result, bail};
@@ -29,7 +29,7 @@ pub trait SuggestOperation {
         rules: &SuggestionRules,
         provider: &dyn MetadataProvider,
         system_prompt: Option<&str>,
-    ) -> Result<MetadataBlock>;
+    ) -> Result<okf::Frontmatter>;
 }
 
 /// Default cleaner implementation backed by source-aware deterministic cleaning.
@@ -62,7 +62,7 @@ impl SuggestOperation for DefaultSuggestOperation {
         rules: &SuggestionRules,
         provider: &dyn MetadataProvider,
         system_prompt: Option<&str>,
-    ) -> Result<MetadataBlock> {
+    ) -> Result<okf::Frontmatter> {
         let raw = provider
             .suggest_with_system_prompt(source_path, llm_context, rules, system_prompt)
             .with_context(|| "provider failed to suggest metadata")?;
@@ -76,7 +76,7 @@ pub struct CookArtifacts {
     pub clean: CleanDocument,
     pub context: LlmContext,
     pub rules: SuggestionRules,
-    pub metadata: MetadataBlock,
+    pub metadata: okf::Frontmatter,
     pub final_markdown: String,
     pub output_path: PathBuf,
     pub prompt_file_path: Option<PathBuf>,

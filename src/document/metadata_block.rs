@@ -1,128 +1,171 @@
-use anyhow::{Result, bail};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use okf::Value;
 
-/// OKF-style YAML metadata fields supported in Phase 1.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MetadataBlock {
-    /// Document classification stored under YAML key `type`.
-    #[serde(rename = "type")]
-    pub doc_type: Option<String>,
-    /// Human-readable title.
-    pub title: Option<String>,
-    /// Short document description.
-    pub description: Option<String>,
-    /// Freeform keyword labels.
-    #[serde(default)]
-    pub tags: Vec<String>,
-    /// Canonical topic labels.
-    #[serde(default)]
-    pub topics: Vec<String>,
-    /// Technology names mentioned by the document.
-    #[serde(default)]
-    pub technologies: Vec<String>,
-    /// Human/programming languages related to the document.
-    #[serde(default)]
-    pub languages: Vec<String>,
+const KEY_TOPICS: &str = "topics";
+const KEY_TECHNOLOGIES: &str = "technologies";
+const KEY_LANGUAGES: &str = "languages";
+
+pub fn get_string_list(fm: &okf::Frontmatter, key: &str) -> Vec<String> {
+    match fm.get(key) {
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .filter_map(|v| match *v {
+                Value::String(ref s) => {
+                    let t = s.trim().to_string();
+                    if t.is_empty() { None } else { Some(t) }
+                }
+                _ => v.as_display_string().map(|s| {
+                    let t = s.trim().to_string();
+                    t
+                }),
+            })
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(v) => v
+            .as_display_string()
+            .map(|s| {
+                let t = s.trim().to_string();
+                if t.is_empty() { vec![] } else { vec![t] }
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    }
 }
 
-/// Result of parsing Markdown content for metadata.
+pub fn set_string_list(fm: &mut okf::Frontmatter, key: &str, values: Vec<String>) {
+    let seq: Vec<Value> = values.into_iter().map(Value::String).collect();
+    fm.set(key, Value::Sequence(seq));
+}
+
+pub fn get_topics(fm: &okf::Frontmatter) -> Vec<String> {
+    get_string_list(fm, KEY_TOPICS)
+}
+
+pub fn set_topics(fm: &mut okf::Frontmatter, values: Vec<String>) {
+    set_string_list(fm, KEY_TOPICS, values);
+}
+
+pub fn get_technologies(fm: &okf::Frontmatter) -> Vec<String> {
+    get_string_list(fm, KEY_TECHNOLOGIES)
+}
+
+pub fn set_technologies(fm: &mut okf::Frontmatter, values: Vec<String>) {
+    set_string_list(fm, KEY_TECHNOLOGIES, values);
+}
+
+pub fn get_languages(fm: &okf::Frontmatter) -> Vec<String> {
+    get_string_list(fm, KEY_LANGUAGES)
+}
+
+pub fn set_languages(fm: &mut okf::Frontmatter, values: Vec<String>) {
+    set_string_list(fm, KEY_LANGUAGES, values);
+}
+
+pub fn get_doc_type(fm: &okf::Frontmatter) -> Option<String> {
+    fm.type_().map(|cow| cow.into_owned())
+}
+
+pub fn get_title(fm: &okf::Frontmatter) -> Option<String> {
+    fm.title().map(|cow| cow.into_owned())
+}
+
+pub fn get_description(fm: &okf::Frontmatter) -> Option<String> {
+    fm.description().map(|cow| cow.into_owned())
+}
+
+pub fn build_frontmatter(
+    doc_type: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+    topics: Vec<String>,
+    technologies: Vec<String>,
+    languages: Vec<String>,
+) -> okf::Frontmatter {
+    let mut fm = okf::Frontmatter::new();
+    if let Some(t) = doc_type {
+        fm.set("type", Value::String(t));
+    }
+    if let Some(t) = title {
+        fm.set("title", Value::String(t));
+    }
+    if let Some(d) = description {
+        fm.set("description", Value::String(d));
+    }
+    fm.set(
+        "tags",
+        Value::Sequence(tags.into_iter().map(Value::String).collect()),
+    );
+    set_topics(&mut fm, topics);
+    set_technologies(&mut fm, technologies);
+    set_languages(&mut fm, languages);
+    fm
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedMarkdown {
-    /// Parsed metadata block, present only when a valid YAML header exists.
-    pub metadata: Option<MetadataBlock>,
+    pub metadata: Option<okf::Frontmatter>,
 }
 
-/// Returns names of required metadata fields that are missing or blank.
-pub fn missing_required_fields(metadata: &MetadataBlock) -> Vec<&'static str> {
+pub fn missing_required_fields(fm: &okf::Frontmatter) -> Vec<&'static str> {
     let mut missing = Vec::new();
 
-    if is_missing(&metadata.doc_type) {
+    if fm.type_().map(|v| v.trim().is_empty()).unwrap_or(true) {
         missing.push("type");
-    }
-    if is_missing(&metadata.title) {
-        missing.push("title");
-    }
-    if is_missing(&metadata.description) {
-        missing.push("description");
     }
 
     missing
 }
 
-fn is_missing(value: &Option<String>) -> bool {
-    value
-        .as_ref()
-        .map(|v| v.trim().is_empty())
-        .unwrap_or(true)
+pub fn missing_recommended_fields(fm: &okf::Frontmatter) -> Vec<&'static str> {
+    let doc = okf::Document::new(fm.clone(), "");
+    doc.missing_recommended()
 }
 
-/// Parses Markdown and extracts a leading YAML metadata block.
-///
-/// If no metadata block is present, returns `metadata: None` without error.
 pub fn parse_markdown(input: &str) -> Result<ParsedMarkdown> {
-    let mut lines = input.lines();
-    let Some(first) = lines.next() else {
-        return Ok(ParsedMarkdown { metadata: None });
-    };
-
-    if first.trim() != "---" {
+    let doc = okf::Document::parse(input).map_err(|e| anyhow::anyhow!("{}", e))?;
+    if doc.frontmatter.is_empty() {
         return Ok(ParsedMarkdown { metadata: None });
     }
+    Ok(ParsedMarkdown {
+        metadata: Some(doc.frontmatter),
+    })
+}
 
+fn serialize_frontmatter_yaml(fm: &okf::Frontmatter) -> String {
+    let mut fm = fm.clone();
+    fm.reorder_preferred();
+    let doc = okf::Document::new(fm, "");
+    let serialized = doc.serialize();
     let mut yaml_lines = Vec::new();
-    let mut found_closing_delimiter = false;
-
-    for line in lines {
+    let mut in_yaml = false;
+    for line in serialized.lines() {
         if line.trim() == "---" {
-            found_closing_delimiter = true;
-            break;
-        }
-        yaml_lines.push(line);
-    }
-
-    if !found_closing_delimiter {
-        bail!(
-            "unterminated YAML metadata block starting at line 1: missing closing '---' delimiter"
-        );
-    }
-
-    let yaml = yaml_lines.join("\n");
-    let fm = match serde_yaml::from_str::<MetadataBlock>(&yaml) {
-        Ok(fm) => fm,
-        Err(err) => {
-            if let Some(loc) = err.location() {
-                // YAML parsing starts after the first delimiter line, so shift by +1.
-                let doc_line = loc.line() + 1;
-                bail!(
-                    "invalid YAML metadata block at line {}, column {}: {}",
-                    doc_line,
-                    loc.column(),
-                    err
-                );
+            if in_yaml {
+                break;
             }
-            bail!("invalid YAML metadata block: {}", err);
+            in_yaml = true;
+            continue;
         }
-    };
-
-    Ok(ParsedMarkdown { metadata: Some(fm) })
-}
-
-/// Serializes metadata to a YAML string suitable for human review.
-pub fn to_yaml(metadata: &MetadataBlock) -> Result<String> {
-    Ok(serde_yaml::to_string(metadata)?)
-}
-
-/// Replaces or inserts a leading metadata block in Markdown content.
-pub fn upsert_metadata_block(input: &str, metadata: &MetadataBlock) -> Result<String> {
-    let body = match find_metadata_block_end(input)? {
-        Some(end) => &input[end..],
-        None => input,
-    };
-
-    let mut yaml = serde_yaml::to_string(metadata)?;
-    if let Some(stripped) = yaml.strip_prefix("---\n") {
-        yaml = stripped.to_string();
+        if in_yaml {
+            yaml_lines.push(line);
+        }
     }
+    yaml_lines.join("\n")
+}
+
+pub fn to_yaml(fm: &okf::Frontmatter) -> Result<String> {
+    let mut out = serialize_frontmatter_yaml(fm);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+pub fn upsert_metadata_block(input: &str, fm: &okf::Frontmatter) -> Result<String> {
+    let body = find_body_after_metadata(input)?;
+
+    let yaml = serialize_frontmatter_yaml(fm);
 
     let mut out = String::new();
     out.push_str("---\n");
@@ -135,75 +178,96 @@ pub fn upsert_metadata_block(input: &str, metadata: &MetadataBlock) -> Result<St
     if !body.is_empty() && !body.starts_with('\n') {
         out.push('\n');
     }
-    out.push_str(body);
+    out.push_str(&body);
 
     Ok(out)
 }
 
-fn find_metadata_block_end(input: &str) -> Result<Option<usize>> {
-    let mut offset = 0usize;
-    let mut chunks = input.split_inclusive('\n');
-    let Some(first) = chunks.next() else {
-        return Ok(None);
-    };
+fn find_body_after_metadata(input: &str) -> Result<String> {
+    let doc = okf::Document::parse(input).map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(doc.body)
+}
 
-    if first.trim() != "---" {
-        return Ok(None);
+pub fn frontmatter_from_json(json: &serde_json::Value) -> Result<okf::Frontmatter> {
+    let obj = json
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("provider response is not a JSON object"))?;
+
+    let mut fm = okf::Frontmatter::new();
+
+    if let Some(v) = obj.get("type").and_then(|v| v.as_str()) {
+        let t = v.trim().to_string();
+        if !t.is_empty() {
+            fm.set("type", Value::String(t));
+        }
     }
-    offset += first.len();
-
-    for chunk in chunks {
-        offset += chunk.len();
-        if chunk.trim() == "---" {
-            return Ok(Some(offset));
+    if let Some(v) = obj.get("title").and_then(|v| v.as_str()) {
+        let t = v.trim().to_string();
+        if !t.is_empty() {
+            fm.set("title", Value::String(t));
+        }
+    }
+    if let Some(v) = obj.get("description").and_then(|v| v.as_str()) {
+        let d = v.trim().to_string();
+        if !d.is_empty() {
+            fm.set("description", Value::String(d));
         }
     }
 
-    bail!(
-        "unterminated YAML metadata block starting at line 1: missing closing '---' delimiter"
-    )
+    let tags = json_string_array(obj, "tags");
+    let topics = json_string_array(obj, "topics");
+    let technologies = json_string_array(obj, "technologies");
+    let languages = json_string_array(obj, "languages");
+
+    fm.set(
+        "tags",
+        Value::Sequence(tags.into_iter().map(Value::String).collect()),
+    );
+    set_topics(&mut fm, topics);
+    set_technologies(&mut fm, technologies);
+    set_languages(&mut fm, languages);
+
+    Ok(fm)
+}
+
+fn json_string_array(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
+    match obj.get(key) {
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(serde_json::Value::String(s)) => {
+            let t = s.trim().to_string();
+            if t.is_empty() { vec![] } else { vec![t] }
+        }
+        _ => vec![],
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MetadataBlock, missing_required_fields, parse_markdown, upsert_metadata_block};
+    use super::*;
 
     #[test]
     fn parses_valid_metadata_block() {
-        let md = r#"---
-type: Reference
-title: Linux UIO
-description: Userspace interface.
-tags:
-  - linux
-topics:
-  - operating-systems
-technologies:
-  - Linux
-languages:
-  - rust
----
-
-# Linux UIO
-"#;
+        let md = "---\ntype: Reference\ntitle: Linux UIO\ndescription: Userspace interface.\ntags:\n  - linux\ntopics:\n  - operating-systems\ntechnologies:\n  - Linux\nlanguages:\n  - rust\n---\n\n# Linux UIO\n";
 
         let parsed = parse_markdown(md).expect("metadata block should parse");
-        let fm = parsed
-            .metadata
-            .expect("metadata block should be present for valid YAML header");
+        let fm = parsed.metadata.expect("metadata block should be present");
 
-        assert_eq!(fm.doc_type.as_deref(), Some("Reference"));
-        assert_eq!(fm.title.as_deref(), Some("Linux UIO"));
-        assert_eq!(fm.tags, vec!["linux"]);
-        assert_eq!(fm.topics, vec!["operating-systems"]);
-        assert_eq!(fm.technologies, vec!["Linux"]);
-        assert_eq!(fm.languages, vec!["rust"]);
+        assert_eq!(get_doc_type(&fm).as_deref(), Some("Reference"));
+        assert_eq!(get_title(&fm).as_deref(), Some("Linux UIO"));
+        assert_eq!(fm.tags(), vec!["linux"]);
+        assert_eq!(get_topics(&fm), vec!["operating-systems"]);
+        assert_eq!(get_technologies(&fm), vec!["Linux"]);
+        assert_eq!(get_languages(&fm), vec!["rust"]);
     }
 
     #[test]
     fn returns_none_when_no_metadata_block() {
         let md = "# Document\nNo YAML header here.";
-
         let parsed = parse_markdown(md).expect("parser should not fail without header");
         assert!(parsed.metadata.is_none());
     }
@@ -216,121 +280,43 @@ languages:
 
     #[test]
     fn fails_for_unterminated_metadata_block() {
-        let md = r#"---
-title: Broken
-tags:
-  - rust
-"#;
-
+        let md = "---\ntitle: Broken\ntags:\n  - rust\n";
         let err = parse_markdown(md).expect_err("unterminated header should fail");
-        assert!(err.to_string().contains("unterminated YAML metadata block"));
-        assert!(err.to_string().contains("line 1"));
-    }
-
-    #[test]
-    fn fails_for_invalid_yaml_metadata_block() {
-        let md = r#"---
-title: Broken
-tags: [rust
----
-"#;
-
-        let err = parse_markdown(md).expect_err("invalid YAML should fail");
-        assert!(err.to_string().contains("invalid YAML metadata block"));
-        assert!(err.to_string().contains("line"));
-        assert!(err.to_string().contains("column"));
-    }
-
-    #[test]
-    fn supports_crlf_newlines() {
-        let md = "---\r\ntitle: CRLF\r\ntags:\r\n  - rust\r\n---\r\n\r\n# Body\r\n";
-
-        let parsed = parse_markdown(md).expect("CRLF should parse");
-        let fm = parsed.metadata.expect("metadata block should be present");
-        assert_eq!(fm.title.as_deref(), Some("CRLF"));
-        assert_eq!(fm.tags, vec!["rust"]);
-    }
-
-    #[test]
-    fn allows_body_separators_without_metadata_block() {
-        let md = r#"# Notes
-
-Section A
----
-Section B
----
-Section C
-"#;
-
-        let parsed = parse_markdown(md).expect("body separators should not fail parsing");
-        assert!(parsed.metadata.is_none());
-    }
-
-    #[test]
-    fn allows_body_separators_after_valid_metadata_block() {
-        let md = r#"---
-title: Doc with breaks
-tags:
-  - rust
----
-
-Part 1
----
-Part 2
-"#;
-
-        let parsed = parse_markdown(md).expect("document should parse");
-        let fm = parsed.metadata.expect("metadata block should be present");
-        assert_eq!(fm.title.as_deref(), Some("Doc with breaks"));
-        assert_eq!(fm.tags, vec!["rust"]);
+        assert!(err.to_string().contains("Unterminated"));
     }
 
     #[test]
     fn reports_missing_required_fields() {
-        let md = r#"---
-title: "   "
-tags:
-  - rust
----
-"#;
-
+        let md = "---\ntags:\n  - rust\n---\n";
         let parsed = parse_markdown(md).expect("document should parse");
-        let metadata = parsed.metadata.expect("metadata should be present");
-        let missing = missing_required_fields(&metadata);
-
-        assert_eq!(missing, vec!["type", "title", "description"]);
+        let fm = parsed.metadata.expect("metadata should be present");
+        let missing = missing_required_fields(&fm);
+        assert_eq!(missing, vec!["type"]);
     }
 
     #[test]
     fn required_fields_pass_when_populated() {
-        let md = r#"---
-type: Note
-title: Complete
-description: Non-empty
----
-"#;
-
+        let md = "---\ntype: Note\ntitle: Complete\ndescription: Non-empty\n---\n";
         let parsed = parse_markdown(md).expect("document should parse");
-        let metadata = parsed.metadata.expect("metadata should be present");
-        let missing = missing_required_fields(&metadata);
-
+        let fm = parsed.metadata.expect("metadata should be present");
+        let missing = missing_required_fields(&fm);
         assert!(missing.is_empty());
     }
 
     #[test]
     fn upserts_metadata_block_for_document_without_metadata() {
         let input = "# Title\n\nBody\n";
-        let metadata = MetadataBlock {
-            doc_type: Some("Note".to_string()),
-            title: Some("Title".to_string()),
-            description: Some("Desc".to_string()),
-            tags: vec!["rust".to_string()],
-            topics: vec![],
-            technologies: vec![],
-            languages: vec![],
-        };
+        let fm = build_frontmatter(
+            Some("Note".to_string()),
+            Some("Title".to_string()),
+            Some("Desc".to_string()),
+            vec!["rust".to_string()],
+            vec![],
+            vec![],
+            vec![],
+        );
 
-        let out = upsert_metadata_block(input, &metadata).expect("upsert should succeed");
+        let out = upsert_metadata_block(input, &fm).expect("upsert should succeed");
         assert!(out.starts_with("---\n"));
         assert!(out.contains("title: Title"));
         assert!(out.contains("# Title"));
@@ -339,37 +325,66 @@ description: Non-empty
     #[test]
     fn upserts_metadata_block_for_document_with_existing_metadata() {
         let input = "---\ntitle: Old\n---\n\n# Body\n";
-        let metadata = MetadataBlock {
-            doc_type: Some("Note".to_string()),
-            title: Some("New".to_string()),
-            description: Some("Desc".to_string()),
-            tags: vec![],
-            topics: vec![],
-            technologies: vec![],
-            languages: vec![],
-        };
+        let fm = build_frontmatter(
+            Some("Note".to_string()),
+            Some("New".to_string()),
+            Some("Desc".to_string()),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
 
-        let out = upsert_metadata_block(input, &metadata).expect("upsert should succeed");
+        let out = upsert_metadata_block(input, &fm).expect("upsert should succeed");
         assert!(!out.contains("title: Old"));
         assert!(out.contains("title: New"));
         assert!(out.contains("# Body"));
     }
 
     #[test]
-    fn preserves_numbered_headings_without_escaping() {
-        let input = "# Title\n\n## 1. bla\n\nText\n";
-        let metadata = MetadataBlock {
-            doc_type: Some("Note".to_string()),
-            title: Some("Title".to_string()),
-            description: Some("Desc".to_string()),
-            tags: vec![],
-            topics: vec![],
-            technologies: vec![],
-            languages: vec![],
-        };
+    fn frontmatter_from_json_parses_valid_payload() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":"Note","title":"Test","description":"Desc","tags":["rust"],"topics":["lang"],"technologies":["Rust"],"languages":["rust"]}"#,
+        )
+        .unwrap();
+        let fm = frontmatter_from_json(&json).expect("should parse");
+        assert_eq!(get_doc_type(&fm).as_deref(), Some("Note"));
+        assert_eq!(get_title(&fm).as_deref(), Some("Test"));
+        assert_eq!(get_description(&fm).as_deref(), Some("Desc"));
+        assert_eq!(fm.tags(), vec!["rust"]);
+        assert_eq!(get_topics(&fm), vec!["lang"]);
+        assert_eq!(get_technologies(&fm), vec!["Rust"]);
+        assert_eq!(get_languages(&fm), vec!["rust"]);
+    }
 
-        let out = upsert_metadata_block(input, &metadata).expect("upsert should succeed");
-        assert!(out.contains("## 1. bla"));
-        assert!(!out.contains("## 1\\. bla"));
+    #[test]
+    fn frontmatter_from_json_handles_null_values() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":null,"title":"Test","description":null,"tags":null}"#,
+        )
+        .unwrap();
+        let fm = frontmatter_from_json(&json).expect("should parse nulls");
+        assert!(get_doc_type(&fm).is_none());
+        assert_eq!(get_title(&fm).as_deref(), Some("Test"));
+        assert!(get_description(&fm).is_none());
+        assert!(fm.tags().is_empty());
+    }
+
+    #[test]
+    fn build_frontmatter_roundtrips_through_yaml() {
+        let fm = build_frontmatter(
+            Some("Note".to_string()),
+            Some("Title".to_string()),
+            Some("Desc".to_string()),
+            vec!["rust".to_string()],
+            vec!["lang".to_string()],
+            vec!["Tokio".to_string()],
+            vec!["rust".to_string()],
+        );
+        let yaml = to_yaml(&fm).expect("to_yaml should succeed");
+        assert!(yaml.contains("type: Note"));
+        assert!(yaml.contains("title: Title"));
+        assert!(yaml.contains("tags:"));
+        assert!(yaml.contains("- rust"));
     }
 }

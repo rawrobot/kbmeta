@@ -19,18 +19,22 @@ flowchart LR
     CMD --> C2[cook command]
     CMD --> C3[index command]
     CMD --> C4[scan command]
-    CMD --> C5[deprecated command adapters]
+    CMD --> C5[query command]
+    CMD --> C6[deprecated command adapters]
 
     C1 --> OPS[Pipeline Operations]
     C2 --> OPS
     C3 --> OPS
-    C5 --> OPS
+    C6 --> OPS
+
+    C5 --> QRY[query filter engine]
 
     OPS --> DOC[document module]
     OPS --> PROV[provider module]
     OPS --> DB[database module]
     OPS --> CFG[config module]
-  OPS --> PATH[pathing module]
+    OPS --> PATH[pathing module]
+    QRY --> DB
 ```
 
 ## Pipeline Operation Types
@@ -160,6 +164,7 @@ Primary native commands:
 - `cook`
 - `index`
 - `scan`
+- `query`
 - `clean`
 
 Deprecated-but-compatible commands in Phase 1:
@@ -201,6 +206,35 @@ Deprecation policy:
 - `index --path <dir>` can be repeated to reindex selected folders only.
 - `index --rewrite` rewrites existing folder `index.md` files.
 - when `--dry-run` is set globally, both indexing phases are preview-only.
+
+## Query Policy
+
+- `query` is read-only and uses indexed metadata from SQLite.
+- default output is filenames only (root-relative), one per line.
+- signed-filter expression syntax is shared across set-like fields:
+- bare term => OR group
+- `+term` => required (AND)
+- `-term` => excluded (AND NOT)
+- reusable signed-filter parser/compiler powers these flags:
+- `--tag` / `-g`
+- `--topic` / `-o`
+- `--tech` / `-k`
+- `--lang` / `-l`
+- query supports output modes:
+- `files` (default)
+- `csv` (header + comma-separated rows)
+- `table` (`path,title,type` default fields)
+- `json` (all fields by default)
+
+```mermaid
+flowchart TD
+  A[kbmeta query flags] --> B[build SQL WHERE fragments]
+  B --> C[signed filter parser]
+  C --> D[relation SQL compiler]
+  D --> E[SQLite documents query]
+  E --> F[hydrate tag/topic/tech/lang fields]
+  F --> G[render files or table or json]
+```
 
 ## Rebuild Engine Policy
 
