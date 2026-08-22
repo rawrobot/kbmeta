@@ -1,20 +1,47 @@
 use crate::config::ProviderConfig;
-use crate::document::metadata_block::MetadataBlock;
-use crate::provider::{MetadataProvider, SuggestionRules};
+use crate::document::metadata_block::frontmatter_from_json;
+use crate::provider::r#trait::{MetadataProvider, SuggestionRules};
 use anyhow::{Context, Result};
+use log::debug;
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
-/// Metadata provider implementation for NVIDIA-hosted OpenAI-compatible endpoints.
-pub struct NvidiaMetadataProvider {
+/// Default sampling temperature when user hasn't configured one.
+/// Lower = more deterministic; higher = more creative.
+const DEFAULT_TEMPERATURE: f32 = 0.2;
+
+/// Default top-p nucleus sampling threshold when user hasn't configured one.
+/// Controls diversity via cumulative probability mass.
+const DEFAULT_TOP_P: f32 = 0.7;
+
+/// Default maximum response tokens when user hasn't configured one.
+const DEFAULT_MAX_TOKENS: u32 = 1024;
+
+/// Max chars shown in debug logs for system prompts.
+const DEBUG_SYSTEM_PROMPT_LIMIT: usize = 300;
+
+/// Max chars shown in debug logs for user prompts.
+const DEBUG_USER_PROMPT_LIMIT: usize = 500;
+
+/// Max chars shown in debug logs for provider response content.
+const DEBUG_CONTENT_LIMIT: usize = 500;
+
+/// Max chars shown in error messages for provider response content.
+const ERROR_CONTENT_LIMIT: usize = 200;
+
+/// Max chars of document content sent to the provider in the user prompt.
+const DOCUMENT_SAMPLE_LIMIT: usize = 12000;
+
+/// Metadata provider for OpenAI-compatible chat completions endpoints.
+pub struct OpenAiApiProvider {
     client: Client,
     config: ProviderConfig,
 }
 
-impl NvidiaMetadataProvider {
+impl OpenAiApiProvider {
     /// Creates a provider with request timeout and optional bearer auth.
     pub fn new(config: ProviderConfig) -> Result<Self> {
         let mut headers = HeaderMap::new();
@@ -38,8 +65,8 @@ impl NvidiaMetadataProvider {
     }
 }
 
-impl MetadataProvider for NvidiaMetadataProvider {
-    fn suggest(&self, path: &Path, content: &str, rules: &SuggestionRules) -> Result<MetadataBlock> {
+impl MetadataProvider for OpenAiApiProvider {
+    fn suggest(&self, path: &Path, content: &str, rules: &SuggestionRules) -> Result<okf::Frontmatter> {
         self.suggest_with_system_prompt(path, content, rules, None)
     }
 
@@ -49,7 +76,7 @@ impl MetadataProvider for NvidiaMetadataProvider {
         content: &str,
         rules: &SuggestionRules,
         system_prompt: Option<&str>,
-    ) -> Result<MetadataBlock> {
+    ) -> Result<okf::Frontmatter> {
         let system = system_prompt
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -58,11 +85,15 @@ impl MetadataProvider for NvidiaMetadataProvider {
         let user = build_user_prompt(path, content);
         let endpoint = normalize_chat_completions_endpoint(&self.config.endpoint);
 
+        debug!("provider request: model={}, endpoint={}", self.config.model, endpoint);
+        debug!("system prompt: {}", truncate(&system, DEBUG_SYSTEM_PROMPT_LIMIT));
+        debug!("user prompt (truncated): {}", truncate(&user, DEBUG_USER_PROMPT_LIMIT));
+
         let req = ChatRequest {
             model: self.config.model.clone(),
-            temperature: 0.2,
-            top_p: 0.7,
-            max_tokens: 1024,
+            temperature: self.config.temperature.unwrap_or(DEFAULT_TEMPERATURE as f64) as f32,
+            top_p: self.config.top_p.unwrap_or(DEFAULT_TOP_P as f64) as f32,
+            max_tokens: self.config.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             response_format: Some(ResponseFormat {
                 format_type: "json_object".to_string(),
             }),
@@ -91,19 +122,34 @@ impl MetadataProvider for NvidiaMetadataProvider {
             .json::<ChatResponse>()
             .with_context(|| "failed to parse provider response")?;
 
+        debug!("provider response: {} choices", body.choices.len());
+
         let content = body
             .choices
             .first()
-            .map(|choice| choice.message.content.trim().to_string())
+            .and_then(|choice| choice.message.content.as_deref())
+            .map(str::trim)
             .filter(|x| !x.is_empty())
+            .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("provider response missing choices[0].message.content"))?;
 
-        let metadata = serde_json::from_str::<MetadataBlock>(&content).with_context(|| {
+        debug!("provider content: {}", truncate(&content, DEBUG_CONTENT_LIMIT));
+
+        let json: serde_json::Value = serde_json::from_str(&content).with_context(|| {
             format!(
-                "provider returned non-JSON metadata payload: {}",
-                truncate(&content, 200)
+                "provider returned non-JSON payload: {}",
+                truncate(&content, ERROR_CONTENT_LIMIT)
             )
         })?;
+
+        let metadata = frontmatter_from_json(&json).with_context(|| {
+            format!(
+                "provider returned invalid metadata JSON: {}",
+                truncate(&content, ERROR_CONTENT_LIMIT)
+            )
+        })?;
+
+        debug!("parsed metadata: type={:?}, title={:?}", metadata.type_(), metadata.title());
 
         Ok(metadata)
     }
@@ -144,7 +190,7 @@ struct ChatChoice {
 
 #[derive(Debug, Deserialize)]
 struct ChatChoiceMessage {
-    content: String,
+    content: Option<String>,
 }
 
 fn build_system_prompt(rules: &SuggestionRules) -> String {
@@ -165,7 +211,7 @@ fn build_user_prompt(path: &Path, content: &str) -> String {
         .map(|x| x.to_string_lossy().to_string())
         .unwrap_or_else(|| "document.md".to_string());
 
-    let sample = truncate(content, 12000);
+    let sample = truncate(content, DOCUMENT_SAMPLE_LIMIT);
     format!(
         "Document: {}\\n\\nContent:\\n{}\\n\\nReturn valid JSON only.",
         file_name, sample

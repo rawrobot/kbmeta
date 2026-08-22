@@ -58,7 +58,7 @@ impl Default for CookConfig {
 /// Configuration for selecting and calling metadata providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    /// Provider kind: `mock` or `nvidia`.
+    /// Provider kind: `mock` or `openai-api` (legacy alias: `nvidia`).
     pub kind: String,
     /// Endpoint URL for chat-completions style APIs.
     pub endpoint: String,
@@ -69,6 +69,15 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
     /// Request timeout in seconds.
     pub timeout_seconds: u64,
+    /// Sampling temperature (0.0–2.0). Defaults to 0.2.
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    /// Top-p nucleus sampling threshold. Defaults to 0.7.
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    /// Maximum tokens in the provider response. Defaults to 1024.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
 }
 
 impl Default for ProviderConfig {
@@ -79,6 +88,9 @@ impl Default for ProviderConfig {
             model: "meta/llama-3.1-8b-instruct".to_string(),
             api_key_env: None,
             timeout_seconds: 60,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
         }
     }
 }
@@ -143,11 +155,6 @@ impl Config {
         let cfg = toml::from_str::<Self>(&content)
             .with_context(|| format!("invalid config file {}", path.display()))?;
         Ok(cfg)
-    }
-
-    /// Creates `.kb/config.toml` with defaults if it does not exist.
-    pub fn write_default(root: &Path) -> Result<()> {
-        Self::write_default_with(root, None)
     }
 
     /// Creates config file with precedence:
