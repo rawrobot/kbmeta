@@ -20,6 +20,8 @@ const DEFAULT_TOP_P: f32 = 0.7;
 /// Default maximum response tokens when user hasn't configured one.
 const DEFAULT_MAX_TOKENS: u32 = 1024;
 
+const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/default.md");
+
 /// Max chars shown in debug logs for system prompts.
 const DEBUG_SYSTEM_PROMPT_LIMIT: usize = 300;
 
@@ -199,10 +201,7 @@ fn build_system_prompt(rules: &SuggestionRules) -> String {
         .clone()
         .unwrap_or_else(|| "Note".to_string());
 
-    format!(
-        "You extract technical knowledge-base metadata. Return JSON only with keys: type, title, description, tags, topics, technologies, languages, filename.\\nThe filename must be a short FS-safe stem (max 50 chars, no extension, use underscores for spaces).\\nUse concise values. Use arrays of strings for list fields.\\nPrefer document type: {}.",
-        preferred_type
-    )
+    DEFAULT_SYSTEM_PROMPT.replace("{{preferred_type}}", &preferred_type)
 }
 
 fn build_user_prompt(path: &Path, content: &str) -> String {
