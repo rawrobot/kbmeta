@@ -18,7 +18,7 @@ const DEFAULT_TEMPERATURE: f32 = 0.2;
 const DEFAULT_TOP_P: f32 = 0.7;
 
 /// Default maximum response tokens when user hasn't configured one.
-const DEFAULT_MAX_TOKENS: u32 = 1024;
+const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/default.md");
 
