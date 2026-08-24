@@ -93,6 +93,9 @@ pub enum Command {
         /// Accept suggestion without prompt (batch mode).
         #[arg(short = 'a', long)]
         accept: bool,
+        /// Overwrite existing output file (only valid with --accept).
+        #[arg(short = 'r', long)]
+        rewrite: bool,
     },
 
     /// Clean a markdown document using source-specific policy.

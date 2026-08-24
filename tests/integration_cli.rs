@@ -282,6 +282,38 @@ fn cook_accept_fails_on_output_collision() {
     assert!(!second.status.success());
     let stderr = stderr_text(&second);
     assert!(stderr.contains("output collision:"));
+    assert!(stderr.contains("--rewrite"));
+}
+
+#[test]
+fn cook_rewrite_overwrites_existing_output() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let first = run_kbmeta(ws.path(), &["cook", "knowledge/documents/new-note.md", "--accept"]);
+    assert!(first.status.success(), "first cook failed: {}", stderr_text(&first));
+
+    let second = run_kbmeta(ws.path(), &["cook", "knowledge/documents/new-note.md", "--accept", "--rewrite"]);
+    assert!(second.status.success(), "cook --rewrite failed: {}", stderr_text(&second));
+
+    let output = ws.path().join("knowledge/staging/New_Note.md");
+    let cooked = std::fs::read_to_string(&output).expect("cooked output should be readable");
+    assert!(cooked.contains("title: New Note"));
+}
+
+#[test]
+fn cook_rewrite_requires_accept() {
+    let ws = fixture_to_tempdir("kb_minimal");
+
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let out = run_kbmeta(ws.path(), &["cook", "knowledge/documents/new-note.md", "--rewrite"]);
+    assert!(!out.status.success());
+    let stderr = stderr_text(&out);
+    assert!(stderr.contains("--rewrite requires --accept"));
 }
 
 #[test]

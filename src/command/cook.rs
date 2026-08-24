@@ -8,12 +8,17 @@ use crate::pipeline::{
 };
 use crate::provider::apply_rules;
 use anyhow::{Context, Result, bail};
+use log::info;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 /// Handles `kbmeta cook`.
-pub(crate) fn run(ctx: &CommandContext, input: &Path, accept: bool) -> Result<()> {
+pub(crate) fn run(ctx: &CommandContext, input: &Path, accept: bool, rewrite: bool) -> Result<()> {
+    if rewrite && !accept {
+        bail!("--rewrite requires --accept (agent mode)");
+    }
+
     let cfg = ctx.load_config()?;
     let input_path = resolve_from_root(ctx.root(), input);
 
@@ -64,7 +69,7 @@ pub(crate) fn run(ctx: &CommandContext, input: &Path, accept: bool) -> Result<()
         return Ok(());
     }
 
-    write_output(&cooked, ctx.root(), &cfg, accept)?;
+    write_output(&cooked, ctx.root(), &cfg, accept, rewrite)?;
     println!("kb-ready markdown: {}", cooked.output_path.display());
     Ok(())
 }
@@ -103,18 +108,20 @@ fn handle_decision(
     Ok(false)
 }
 
-fn write_output(cooked: &CookArtifacts, root: &Path, cfg: &Config, accept: bool) -> Result<()> {
+fn write_output(cooked: &CookArtifacts, root: &Path, cfg: &Config, accept: bool, rewrite: bool) -> Result<()> {
     if cooked.output_path.exists() {
-        if accept {
+        if accept && !rewrite {
             bail!(
-                "output collision: {} already exists",
+                "output collision: {} already exists (use --rewrite to overwrite)",
                 cooked.output_path.display()
             );
         }
 
-        if !confirm_overwrite(&cooked.output_path)? {
-            println!("Output kept unchanged: {}", cooked.output_path.display());
-            return Ok(());
+        if !accept {
+            if !confirm_overwrite(&cooked.output_path)? {
+                println!("Output kept unchanged: {}", cooked.output_path.display());
+                return Ok(());
+            }
         }
     }
 
@@ -128,12 +135,16 @@ fn write_output(cooked: &CookArtifacts, root: &Path, cfg: &Config, accept: bool)
     fs::write(&cooked.output_path, &cooked.final_markdown)
         .with_context(|| format!("failed to write {}", cooked.output_path.display()))?;
 
+    let base_name = PathBuf::from(&cooked.clean.filename)
+        .file_stem()
+        .map(|x| x.to_string_lossy().to_string())
+        .unwrap_or_else(|| "document".to_string());
+
     if cfg.keep_intermediate {
-        let base_name = PathBuf::from(&cooked.clean.filename)
-            .file_stem()
-            .map(|x| x.to_string_lossy().to_string())
-            .unwrap_or_else(|| "document".to_string());
-        write_intermediate_artifacts(root, &base_name, cooked)?;
+        let paths = write_intermediate_artifacts(root, &base_name, cooked)?;
+        for path in &paths {
+            info!("intermediate artifact: {}", path.display());
+        }
     }
 
     rebuild_index_after_write(root, cfg)?;

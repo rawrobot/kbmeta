@@ -59,7 +59,7 @@ pub fn execute(
                 json,
             },
         ),
-        Command::Cook { input, accept } => cook::run(&ctx, &input, accept),
+        Command::Cook { input, accept, rewrite } => cook::run(&ctx, &input, accept, rewrite),
         Command::Clean {
             input,
             output,
