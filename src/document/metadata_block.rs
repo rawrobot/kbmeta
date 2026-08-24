@@ -73,6 +73,16 @@ pub fn get_description(fm: &okf::Frontmatter) -> Option<String> {
     fm.description().map(|cow| cow.into_owned())
 }
 
+pub fn get_filename(fm: &okf::Frontmatter) -> Option<String> {
+    match fm.get("filename") {
+        Some(Value::String(s)) => {
+            let t = s.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        }
+        _ => None,
+    }
+}
+
 pub fn build_frontmatter(
     doc_type: Option<String>,
     title: Option<String>,
@@ -211,6 +221,12 @@ pub fn frontmatter_from_json(json: &serde_json::Value) -> Result<okf::Frontmatte
         let d = v.trim().to_string();
         if !d.is_empty() {
             fm.set("description", Value::String(d));
+        }
+    }
+    if let Some(v) = obj.get("filename").and_then(|v| v.as_str()) {
+        let f = v.trim().to_string();
+        if !f.is_empty() {
+            fm.set("filename", Value::String(f));
         }
     }
 

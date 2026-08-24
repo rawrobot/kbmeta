@@ -1,6 +1,7 @@
 use crate::document::metadata_block::build_frontmatter;
 use crate::provider::r#trait::{MetadataProvider, SuggestionRules};
 use anyhow::Result;
+use okf::Value;
 use std::path::Path;
 
 /// Deterministic fallback provider used for local development and testing.
@@ -33,7 +34,7 @@ impl MetadataProvider for MockMetadataProvider {
             languages.push(rules.canonical_language("rust"));
         }
 
-        Ok(build_frontmatter(
+        let mut fm = build_frontmatter(
             Some(
                 rules
                     .preferred_doc_type
@@ -46,6 +47,19 @@ impl MetadataProvider for MockMetadataProvider {
             vec![rules.canonical_topic("notes")],
             technologies,
             languages,
-        ))
+        );
+
+        let filename = title
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect::<String>();
+        let filename = filename
+            .trim_matches(|c| c == '_' || c == '-')
+            .to_string();
+        if !filename.is_empty() {
+            fm.set("filename", Value::String(filename));
+        }
+
+        Ok(fm)
     }
 }

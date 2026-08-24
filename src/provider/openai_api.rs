@@ -200,7 +200,7 @@ fn build_system_prompt(rules: &SuggestionRules) -> String {
         .unwrap_or_else(|| "Note".to_string());
 
     format!(
-        "You extract technical knowledge-base metadata. Return JSON only with keys: type, title, description, tags, topics, technologies, languages.\\nUse concise values. Use arrays of strings for list fields.\\nPrefer document type: {}.",
+        "You extract technical knowledge-base metadata. Return JSON only with keys: type, title, description, tags, topics, technologies, languages, filename.\\nThe filename must be a short FS-safe stem (max 50 chars, no extension, use underscores for spaces).\\nUse concise values. Use arrays of strings for list fields.\\nPrefer document type: {}.",
         preferred_type
     )
 }

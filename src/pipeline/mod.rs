@@ -3,7 +3,7 @@ use crate::database::rebuild::{RebuildOptions, rebuild_index};
 use crate::document::cleaner::{CleanDocument, clean_document};
 use crate::document::llm_context::{ContextBuilder, DefaultLlmContextBuilder, LlmContext};
 use crate::document::markdown::generate_filename_with_limit;
-use crate::document::metadata_block::{missing_required_fields, to_yaml, upsert_metadata_block};
+use crate::document::metadata_block::{missing_required_fields, to_yaml, upsert_metadata_block, get_filename};
 use crate::pathing::resolve_from_root;
 use crate::provider::{MetadataProvider, SuggestionRules, apply_rules, build_provider, derive_rules};
 use anyhow::{Context, Result, bail};
@@ -115,14 +115,14 @@ pub fn run_cook(
         eprintln!("warning: skipped {}: {}", warning.path.display(), warning.message);
     }
 
-    let output_stem = generate_filename_with_limit(
+    let output_dir = resolve_from_root(root, &config.cook.output_dir);
+    let fallback_stem = generate_filename_with_limit(
         clean.title.as_deref(),
         input_path,
         config.cook.max_filename_len,
     );
-    let output_dir = resolve_from_root(root, &config.cook.output_dir);
-    let output_path = output_dir.join(&output_stem);
-    let rules = derive_rules(&report.documents, &output_path);
+    let temp_output_path = output_dir.join(&fallback_stem);
+    let rules = derive_rules(&report.documents, &temp_output_path);
     let provider = build_provider(config)?;
     let loaded_prompt = load_cook_system_prompt(root, config)?;
     let metadata = suggest_op.run(
@@ -141,6 +141,10 @@ pub fn run_cook(
         );
     }
 
+    let output_stem = extract_filename(&metadata, config.cook.max_filename_len)
+        .unwrap_or(fallback_stem);
+    let output_path = output_dir.join(&output_stem);
+
     let final_markdown = upsert_metadata_block(&clean.markdown, &metadata)?;
 
     Ok(CookArtifacts {
@@ -156,8 +160,46 @@ pub fn run_cook(
     })
 }
 
+fn extract_filename(metadata: &okf::Frontmatter, max_len: usize) -> Option<String> {
+    let raw = get_filename(metadata)?;
+    let safe_max = max_len.max(8);
+
+    let mut out = String::new();
+    let mut last_sep = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+            last_sep = false;
+            continue;
+        }
+        if !last_sep {
+            out.push('_');
+            last_sep = true;
+        }
+    }
+    while out.ends_with('_') || out.ends_with('-') {
+        out.pop();
+    }
+    while out.starts_with('_') || out.starts_with('-') {
+        out.remove(0);
+    }
+    if out.is_empty() {
+        return None;
+    }
+    if out.len() > safe_max {
+        out.truncate(safe_max);
+        while out.ends_with('_') || out.ends_with('-') {
+            out.pop();
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(format!("{}.md", out))
+}
+
 /// Writes optional intermediate artifacts for debugging and review workflows.
-pub fn write_intermediate_artifacts(root: &Path, base_name: &str, cooked: &CookArtifacts) -> Result<()> {
+pub fn write_intermediate_artifacts(root: &Path, base_name: &str, cooked: &CookArtifacts) -> Result<Vec<PathBuf>> {
     let out_dir = resolve_from_root(root, Path::new(".kb/intermediate"));
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
@@ -173,11 +215,7 @@ pub fn write_intermediate_artifacts(root: &Path, base_name: &str, cooked: &CookA
     fs::write(&suggest_path, to_yaml(&cooked.metadata)?)
         .with_context(|| format!("failed to write {}", suggest_path.display()))?;
 
-    println!("intermediate clean: {}", clean_path.display());
-    println!("intermediate context: {}", context_path.display());
-    println!("intermediate suggestion: {}", suggest_path.display());
-
-    Ok(())
+    Ok(vec![clean_path, context_path, suggest_path])
 }
 
 /// Rebuilds the index after a write to keep scan/rebuild state consistent.

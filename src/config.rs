@@ -116,7 +116,7 @@ fn default_cook_prompt_name() -> String {
 }
 
 fn default_cook_max_filename_len() -> usize {
-    32
+    50
 }
 
 fn default_cook_output_dir() -> PathBuf {
