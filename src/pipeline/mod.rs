@@ -7,8 +7,10 @@ use crate::document::metadata_block::{missing_required_fields, to_yaml, upsert_m
 use crate::pathing::resolve_from_root;
 use crate::provider::{MetadataProvider, SuggestionRules, apply_rules, build_provider, derive_rules};
 use anyhow::{Context, Result, bail};
+use okf::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Clean operation abstraction used by command handlers and pipelines.
 pub trait CleanOperation {
@@ -125,13 +127,15 @@ pub fn run_cook(
     let rules = derive_rules(&report.documents, &temp_output_path);
     let provider = build_provider(config)?;
     let loaded_prompt = load_cook_system_prompt(root, config)?;
-    let metadata = suggest_op.run(
+    let mut metadata = suggest_op.run(
         input_path,
         &context.markdown,
         &rules,
         provider.as_ref(),
         loaded_prompt.system_prompt.as_deref(),
     )?;
+
+    ensure_generated(&mut metadata);
 
     let missing = missing_required_fields(&metadata);
     if !missing.is_empty() {
@@ -145,7 +149,8 @@ pub fn run_cook(
         .unwrap_or(fallback_stem);
     let output_path = output_dir.join(&output_stem);
 
-    let final_markdown = upsert_metadata_block(&clean.markdown, &metadata)?;
+    let body = ensure_body_heading(&clean.markdown, &clean.title);
+    let final_markdown = upsert_metadata_block(&body, &metadata)?;
 
     Ok(CookArtifacts {
         clean,
@@ -158,6 +163,54 @@ pub fn run_cook(
         prompt_name: loaded_prompt.prompt_name,
         expected_prompt_path: loaded_prompt.expected_prompt_path,
     })
+}
+
+fn ensure_generated(metadata: &mut okf::Frontmatter) {
+    if metadata.get("generated").is_some() {
+        return;
+    }
+    let mut by = okf::yaml::Mapping::new();
+    by.insert("by".to_string(), Value::String("kbmeta/cook".to_string()));
+    by.insert("at".to_string(), Value::String(utc_now_iso8601()));
+    metadata.set("generated", Value::Mapping(by));
+}
+
+fn ensure_body_heading(body: &str, title: &Option<String>) -> String {
+    let trimmed = body.trim_start();
+    if trimmed.starts_with("# ") {
+        return body.to_string();
+    }
+    let heading = title
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or("Untitled");
+    format!("# {heading}\n\n{body}")
+}
+
+fn utc_now_iso8601() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let days = (secs / 86400) as i64;
+    let time_of_day = (secs % 86400) as u32;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Civil date from days since epoch (algorithm from Howard Hinnant)
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 fn extract_filename(metadata: &okf::Frontmatter, max_len: usize) -> Option<String> {
