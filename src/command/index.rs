@@ -5,7 +5,7 @@ use crate::document::Document;
 use crate::document::discovery::DiscoverWarning;
 use crate::pathing::resolve_from_root;
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -162,8 +162,8 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
         );
     }
 
+    // Documents grouped by their direct parent directory.
     let mut by_dir: BTreeMap<PathBuf, Vec<DocRow>> = BTreeMap::new();
-
     for doc in report.documents {
         let Some(file_name) = doc.path.file_name().map(|s| s.to_string_lossy().to_string()) else {
             continue;
@@ -171,11 +171,9 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
         if file_name == "index.md" {
             continue;
         }
-
         let Some(parent) = doc.path.parent() else {
             continue;
         };
-
         let title = doc
             .metadata
             .as_ref()
@@ -190,7 +188,6 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
             .metadata
             .as_ref()
             .and_then(|m| m.description().map(|cow| cow.into_owned()));
-
         by_dir
             .entry(parent.to_path_buf())
             .or_default()
@@ -202,10 +199,18 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
             });
     }
 
+    // Every directory that must carry an index: one with direct documents, or
+    // one that contains subdirectories holding documents.
+    let mut index_dirs: BTreeSet<PathBuf> = by_dir.keys().cloned().collect();
+    collect_parent_dirs(docs_root, &mut index_dirs);
+
     let mut written = 0usize;
     let mut skipped_existing = 0usize;
 
-    for (dir, mut rows) in by_dir {
+    for dir in &index_dirs {
+        let subdirs = collect_subdirs(dir, &index_dirs, &by_dir);
+
+        let mut rows = by_dir.get(dir).cloned().unwrap_or_default();
         rows.sort_by(|a, b| a.title.cmp(&b.title));
 
         let index_path = dir.join("index.md");
@@ -215,14 +220,14 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
             continue;
         }
 
-        let content = render_index(&rows);
+        let content = render_index(&rows, &subdirs);
 
         if ctx.dry_run() {
             println!("dry-run write: {}", index_path.display());
             continue;
         }
 
-        fs::create_dir_all(&dir)
+        fs::create_dir_all(dir)
             .with_context(|| format!("failed to create {}", dir.display()))?;
         fs::write(&index_path, content)
             .with_context(|| format!("failed to write {}", index_path.display()))?;
@@ -242,6 +247,67 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
     Ok(())
 }
 
+/// Adds every ancestor of a document-bearing directory up to (and including)
+/// `root`, so directories that only contain subdirectories also get an index.
+fn collect_parent_dirs(root: &Path, index_dirs: &mut BTreeSet<PathBuf>) {
+    let existing: Vec<PathBuf> = index_dirs.iter().cloned().collect();
+    for dir in existing {
+        let mut cur = dir.parent();
+        while let Some(p) = cur {
+            if p.starts_with(root) && index_dirs.insert(p.to_path_buf()) {
+                cur = p.parent();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+fn collect_subdirs(
+    dir: &Path,
+    index_dirs: &BTreeSet<PathBuf>,
+    by_dir: &BTreeMap<PathBuf, Vec<DocRow>>,
+) -> Vec<SubdirRow> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".kb" {
+            continue;
+        }
+        if index_dirs.contains(&path) {
+            let titles = by_dir
+                .get(&path)
+                .map(|rows| rows.iter().map(|r| r.title.clone()).collect())
+                .unwrap_or_default();
+            out.push(SubdirRow {
+                name,
+                description: load_index_description(&path),
+                titles,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+fn load_index_description(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(dir.join("index.md")).ok()?;
+    let parsed = crate::document::metadata_block::parse_markdown(&content).ok()?;
+    parsed
+        .metadata
+        .as_ref()
+        .and_then(|m| m.description().map(|cow| cow.into_owned()))
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+}
+
 #[derive(Debug, Clone)]
 struct DocRow {
     file_name: String,
@@ -250,9 +316,40 @@ struct DocRow {
     description: Option<String>,
 }
 
-fn render_index(rows: &[DocRow]) -> String {
+#[derive(Debug, Clone)]
+struct SubdirRow {
+    name: String,
+    description: Option<String>,
+    titles: Vec<String>,
+}
+
+fn render_index(rows: &[DocRow], subdirs: &[SubdirRow]) -> String {
     let mut out = String::new();
     out.push_str("# Index\n\n");
+
+    if !subdirs.is_empty() {
+        out.push_str("## Subdirectories\n\n");
+        for sub in subdirs {
+            out.push_str(&format!(
+                "- [{}]({}/index.md)",
+                escape_md(&sub.name),
+                escape_md(&sub.name)
+            ));
+            if let Some(desc) = sub.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                out.push_str(&format!(": {}", escape_md(desc)));
+            } else if !sub.titles.is_empty() {
+                out.push_str(&format!(
+                    " - Contains {} entr{}: {}",
+                    sub.titles.len(),
+                    if sub.titles.len() == 1 { "y" } else { "ies" },
+                    sub.titles.iter().map(|t| escape_md(t)).collect::<Vec<_>>().join(", ")
+                ));
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
     out.push_str("## Documents\n\n");
 
     for row in rows {
@@ -286,7 +383,7 @@ fn file_stem_fallback(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{DocRow, render_index};
+    use super::{DocRow, SubdirRow, render_index};
 
     #[test]
     fn renders_index_rows() {
@@ -297,8 +394,33 @@ mod tests {
             description: Some("desc".to_string()),
         }];
 
-        let out = render_index(&rows);
+        let out = render_index(&rows, &[]);
         assert!(out.contains("# Index"));
         assert!(out.contains("[Doc A](./a.md) (Reference): desc"));
+    }
+
+    #[test]
+    fn renders_subdirectories_section() {
+        let rows = vec![];
+        let subdirs = vec![SubdirRow {
+            name: "cargo".to_string(),
+            description: Some("Notes".to_string()),
+            titles: vec!["A".to_string(), "B".to_string()],
+        }];
+        let out = render_index(&rows, &subdirs);
+        assert!(out.contains("## Subdirectories"));
+        assert!(out.contains("[cargo](cargo/index.md): Notes"));
+    }
+
+    #[test]
+    fn renders_subdir_entry_count_when_no_description() {
+        let rows = vec![];
+        let subdirs = vec![SubdirRow {
+            name: "ai-agents".to_string(),
+            description: None,
+            titles: vec!["X".to_string(), "Y".to_string(), "Z".to_string()],
+        }];
+        let out = render_index(&rows, &subdirs);
+        assert!(out.contains("- [ai-agents](ai-agents/index.md) - Contains 3 entries: X, Y, Z"));
     }
 }

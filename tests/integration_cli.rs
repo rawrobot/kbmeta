@@ -373,6 +373,33 @@ fn index_runs_rebuild_and_folder_generation() {
 }
 
 #[test]
+fn index_creates_subdir_sections_and_nested_indexes() {
+    let ws = fixture_to_tempdir("kb_minimal");
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+
+    let docs_root = ws.path().join("knowledge/documents");
+    let sub = docs_root.join("crates");
+    std::fs::create_dir_all(&sub).expect("create subdir");
+    std::fs::write(
+        sub.join("tokio.md"),
+        "---\ntype: Note\ntitle: Tokio vs Smol\ndescription: Async runtimes.\n---\n",
+    )
+    .expect("write subdir doc");
+
+    let out = run_kbmeta(ws.path(), &["index"]);
+    assert!(out.status.success(), "index failed: {}", stderr_text(&out));
+
+    let sub_index = sub.join("index.md");
+    assert!(sub_index.exists(), "subdir index should be generated");
+
+    let parent_index = docs_root.join("index.md");
+    let content = std::fs::read_to_string(&parent_index).expect("parent index readable");
+    assert!(content.contains("## Subdirectories"));
+    assert!(content.contains("[crates](crates/index.md)"));
+}
+
+#[test]
 fn query_prints_matching_filenames_by_default() {
     let ws = fixture_to_tempdir("kb_minimal");
 
