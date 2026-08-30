@@ -1,7 +1,7 @@
 use crate::config::ProviderConfig;
 use crate::document::metadata_block::frontmatter_from_json;
 use crate::provider::r#trait::{MetadataProvider, SuggestionRules};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use log::debug;
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -50,8 +50,15 @@ impl OpenAiApiProvider {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         if let Some(var) = &config.api_key_env {
-            let token = std::env::var(var)
-                .with_context(|| format!("failed to read api key from env var {}", var))?;
+            let token = match std::env::var(var) {
+                Ok(t) if !t.trim().is_empty() => t,
+                _ => bail!(
+                    "environment variable {} is not set (or is empty); \
+                     set it before running cook, e.g. export {}='<key>'",
+                    var,
+                    var
+                ),
+            };
             let value = HeaderValue::from_str(&format!("Bearer {}", token))
                 .with_context(|| "invalid bearer token header value")?;
             headers.insert(AUTHORIZATION, value);
