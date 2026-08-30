@@ -208,7 +208,7 @@ fn generate_folder_indexes(ctx: &CommandContext, docs_root: &Path, rewrite: bool
     let mut skipped_existing = 0usize;
 
     for dir in &index_dirs {
-        let subdirs = collect_subdirs(dir, &index_dirs, &by_dir);
+        let subdirs = collect_subdirs(dir, &index_dirs);
 
         let mut rows = by_dir.get(dir).cloned().unwrap_or_default();
         rows.sort_by(|a, b| a.title.cmp(&b.title));
@@ -263,11 +263,7 @@ fn collect_parent_dirs(root: &Path, index_dirs: &mut BTreeSet<PathBuf>) {
     }
 }
 
-fn collect_subdirs(
-    dir: &Path,
-    index_dirs: &BTreeSet<PathBuf>,
-    by_dir: &BTreeMap<PathBuf, Vec<DocRow>>,
-) -> Vec<SubdirRow> {
+fn collect_subdirs(dir: &Path, index_dirs: &BTreeSet<PathBuf>) -> Vec<SubdirRow> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
         return out;
@@ -282,14 +278,9 @@ fn collect_subdirs(
             continue;
         }
         if index_dirs.contains(&path) {
-            let titles = by_dir
-                .get(&path)
-                .map(|rows| rows.iter().map(|r| r.title.clone()).collect())
-                .unwrap_or_default();
             out.push(SubdirRow {
                 name,
                 description: load_index_description(&path),
-                titles,
             });
         }
     }
@@ -320,7 +311,6 @@ struct DocRow {
 struct SubdirRow {
     name: String,
     description: Option<String>,
-    titles: Vec<String>,
 }
 
 fn render_index(rows: &[DocRow], subdirs: &[SubdirRow]) -> String {
@@ -331,19 +321,12 @@ fn render_index(rows: &[DocRow], subdirs: &[SubdirRow]) -> String {
         out.push_str("## Subdirectories\n\n");
         for sub in subdirs {
             out.push_str(&format!(
-                "- [{}]({}/index.md)",
+                "* [{}]({}/)",
                 escape_md(&sub.name),
                 escape_md(&sub.name)
             ));
             if let Some(desc) = sub.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-                out.push_str(&format!(": {}", escape_md(desc)));
-            } else if !sub.titles.is_empty() {
-                out.push_str(&format!(
-                    " - Contains {} entr{}: {}",
-                    sub.titles.len(),
-                    if sub.titles.len() == 1 { "y" } else { "ies" },
-                    sub.titles.iter().map(|t| escape_md(t)).collect::<Vec<_>>().join(", ")
-                ));
+                out.push_str(&format!(" - {}", escape_md(desc)));
             }
             out.push('\n');
         }
@@ -354,13 +337,14 @@ fn render_index(rows: &[DocRow], subdirs: &[SubdirRow]) -> String {
 
     for row in rows {
         out.push_str(&format!(
-            "- [{}](./{}) ({})",
+            "* [{}]({})",
             escape_md(&row.title),
-            row.file_name,
-            escape_md(&row.doc_type)
+            escape_md(&row.file_name)
         ));
-        if let Some(desc) = row.description.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
-            out.push_str(&format!(": {}", escape_md(desc)));
+        let desc = row.description.as_deref().map(str::trim).filter(|d| !d.is_empty());
+        match desc {
+            Some(d) => out.push_str(&format!(" - {}", escape_md(d))),
+            None => out.push_str(&format!(" ({})", escape_md(&row.doc_type))),
         }
         out.push('\n');
     }
@@ -396,7 +380,20 @@ mod tests {
 
         let out = render_index(&rows, &[]);
         assert!(out.contains("# Index"));
-        assert!(out.contains("[Doc A](./a.md) (Reference): desc"));
+        assert!(out.contains("* [Doc A](a.md) - desc"));
+    }
+
+    #[test]
+    fn renders_doc_type_when_no_description() {
+        let rows = vec![DocRow {
+            file_name: "b.md".to_string(),
+            title: "Doc B".to_string(),
+            doc_type: "Reference".to_string(),
+            description: None,
+        }];
+
+        let out = render_index(&rows, &[]);
+        assert!(out.contains("* [Doc B](b.md) (Reference)"));
     }
 
     #[test]
@@ -405,22 +402,20 @@ mod tests {
         let subdirs = vec![SubdirRow {
             name: "cargo".to_string(),
             description: Some("Notes".to_string()),
-            titles: vec!["A".to_string(), "B".to_string()],
         }];
         let out = render_index(&rows, &subdirs);
         assert!(out.contains("## Subdirectories"));
-        assert!(out.contains("[cargo](cargo/index.md): Notes"));
+        assert!(out.contains("* [cargo](cargo/) - Notes"));
     }
 
     #[test]
-    fn renders_subdir_entry_count_when_no_description() {
+    fn renders_subdir_without_description() {
         let rows = vec![];
         let subdirs = vec![SubdirRow {
             name: "ai-agents".to_string(),
             description: None,
-            titles: vec!["X".to_string(), "Y".to_string(), "Z".to_string()],
         }];
         let out = render_index(&rows, &subdirs);
-        assert!(out.contains("- [ai-agents](ai-agents/index.md) - Contains 3 entries: X, Y, Z"));
+        assert!(out.contains("* [ai-agents](ai-agents/)"));
     }
 }

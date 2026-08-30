@@ -396,7 +396,7 @@ fn index_creates_subdir_sections_and_nested_indexes() {
     let parent_index = docs_root.join("index.md");
     let content = std::fs::read_to_string(&parent_index).expect("parent index readable");
     assert!(content.contains("## Subdirectories"));
-    assert!(content.contains("[crates](crates/index.md)"));
+    assert!(content.contains("[crates](crates/)"));
 }
 
 #[test]
