@@ -1,16 +1,23 @@
 use crate::config::Config;
-use crate::database::rebuild::{RebuildOptions, rebuild_index};
-use crate::document::cleaner::{CleanDocument, clean_document};
+use crate::database::rebuild::{rebuild_index, RebuildOptions};
+use crate::document::cleaner::{clean_document, CleanDocument};
 use crate::document::llm_context::{ContextBuilder, DefaultLlmContextBuilder, LlmContext};
 use crate::document::markdown::generate_filename_with_limit;
-use crate::document::metadata_block::{missing_required_fields, to_yaml, upsert_metadata_block, get_filename};
+use crate::document::metadata_block::{
+    get_filename, missing_required_fields, strip_transient_fields, to_yaml, upsert_metadata_block,
+    NewTerms,
+};
 use crate::pathing::resolve_from_root;
-use crate::provider::{MetadataProvider, SuggestionRules, apply_rules, build_provider, derive_rules};
-use anyhow::{Context, Result, bail};
+use crate::pipeline::error::CookError;
+use crate::provider::{apply_rules, build_provider, MetadataProvider, Suggestion, SuggestionRules};
+use crate::vocabulary::{recheck_new_terms, Vocabulary};
+use anyhow::{Context, Result};
 use okf::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+pub mod error;
 
 /// Clean operation abstraction used by command handlers and pipelines.
 pub trait CleanOperation {
@@ -31,7 +38,7 @@ pub trait SuggestOperation {
         rules: &SuggestionRules,
         provider: &dyn MetadataProvider,
         system_prompt: Option<&str>,
-    ) -> Result<okf::Frontmatter>;
+    ) -> Result<Suggestion>;
 }
 
 /// Default cleaner implementation backed by source-aware deterministic cleaning.
@@ -64,11 +71,14 @@ impl SuggestOperation for DefaultSuggestOperation {
         rules: &SuggestionRules,
         provider: &dyn MetadataProvider,
         system_prompt: Option<&str>,
-    ) -> Result<okf::Frontmatter> {
+    ) -> Result<Suggestion> {
         let raw = provider
             .suggest_with_system_prompt(source_path, llm_context, rules, system_prompt)
             .with_context(|| "provider failed to suggest metadata")?;
-        Ok(apply_rules(raw, rules))
+        Ok(Suggestion {
+            metadata: apply_rules(raw.metadata, rules),
+            new_terms: raw.new_terms,
+        })
     }
 }
 
@@ -79,6 +89,9 @@ pub struct CookArtifacts {
     pub context: LlmContext,
     pub rules: SuggestionRules,
     pub metadata: okf::Frontmatter,
+    /// New vocabulary candidates accepted after the §5 re-check against the
+    /// controlled vocabulary.
+    pub new_terms: NewTerms,
     pub final_markdown: String,
     pub output_path: PathBuf,
     pub prompt_file_path: Option<PathBuf>,
@@ -114,7 +127,11 @@ pub fn run_cook(
         .with_context(|| format!("failed to scan {}", docs_root.display()))?;
 
     for warning in report.warnings {
-        eprintln!("warning: skipped {}: {}", warning.path.display(), warning.message);
+        eprintln!(
+            "warning: skipped {}: {}",
+            warning.path.display(),
+            warning.message
+        );
     }
 
     let output_dir = resolve_from_root(root, &config.cook.output_dir);
@@ -123,11 +140,11 @@ pub fn run_cook(
         input_path,
         config.cook.max_filename_len,
     );
-    let temp_output_path = output_dir.join(&fallback_stem);
-    let rules = derive_rules(&report.documents, &temp_output_path);
+    let vocab = Vocabulary::load(root);
+    let rules = SuggestionRules::from_vocabulary(&vocab, None);
     let provider = build_provider(config)?;
     let loaded_prompt = load_cook_system_prompt(root, config)?;
-    let mut metadata = suggest_op.run(
+    let suggestion = suggest_op.run(
         input_path,
         &context.markdown,
         &rules,
@@ -135,28 +152,42 @@ pub fn run_cook(
         loaded_prompt.system_prompt.as_deref(),
     )?;
 
+    // Re-check model-reported new terms against the vocabulary (spec §5).
+    // Already-known candidates are rejected and reported back to the user.
+    let (accepted_new_terms, rejected_new_terms) = recheck_new_terms(&vocab, &suggestion.new_terms);
+    report_rejected_new_terms(&rejected_new_terms);
+
+    let mut metadata = suggestion.metadata;
     ensure_generated(&mut metadata);
+    ensure_status_draft(&mut metadata);
 
     let missing = missing_required_fields(&metadata);
     if !missing.is_empty() {
-        bail!(
-            "suggested metadata is invalid: missing required fields: {}",
-            missing.join(", ")
-        );
+        return Err(CookError::InvalidSuggestedMetadata {
+            missing: missing.join(", "),
+        }
+        .into());
     }
 
-    let output_stem = extract_filename(&metadata, config.cook.max_filename_len)
-        .unwrap_or(fallback_stem);
+    let output_stem =
+        extract_filename(&metadata, config.cook.max_filename_len).unwrap_or(fallback_stem);
+
+    // `filename` and `new_terms` are model-only artifacts (spec §4): never
+    // persist them into the YAML frontmatter.
+    strip_transient_fields(&mut metadata);
+
     let output_path = output_dir.join(&output_stem);
 
     let body = ensure_body_heading(&clean.markdown, &clean.title);
-    let final_markdown = upsert_metadata_block(&body, &metadata)?;
+    let final_markdown =
+        upsert_metadata_block(&body, &metadata).map_err(|e| CookError::UpsertMetadata(e))?;
 
     Ok(CookArtifacts {
         clean,
         context,
         rules,
         metadata,
+        new_terms: accepted_new_terms,
         final_markdown,
         output_path,
         prompt_file_path: loaded_prompt.prompt_file_path,
@@ -165,14 +196,48 @@ pub fn run_cook(
     })
 }
 
+fn report_rejected_new_terms(rejected: &NewTerms) {
+    let mut all = Vec::new();
+    all.extend(rejected.tags.iter().map(|t| format!("tag {{{t}}}")));
+    all.extend(rejected.topics.iter().map(|t| format!("topic {{{t}}}")));
+    all.extend(
+        rejected
+            .technologies
+            .iter()
+            .map(|t| format!("technology {{{t}}}")),
+    );
+    if !all.is_empty() {
+        eprintln!(
+            "warning: model reported existing terms as new; ignored: {}",
+            all.join(", ")
+        );
+    }
+}
+
 fn ensure_generated(metadata: &mut okf::Frontmatter) {
     if metadata.get("generated").is_some() {
         return;
     }
     let mut by = okf::yaml::Mapping::new();
-    by.insert("by".to_string(), Value::String("kbmeta/cook".to_string()));
+    by.insert(
+        "by".to_string(),
+        Value::String("okf-metadata-agent/1.0".to_string()),
+    );
     by.insert("at".to_string(), Value::String(utc_now_iso8601()));
     metadata.set("generated", Value::Mapping(by));
+}
+
+/// Stamps `status: draft` on freshly generated documents (OKF metadata-API §4),
+/// preserving an existing status when re-cooking a document that has one.
+fn ensure_status_draft(metadata: &mut okf::Frontmatter) {
+    let existing = metadata
+        .get("status")
+        .and_then(|v| v.as_display_string())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if existing.is_none() {
+        metadata.set("status", Value::String("draft".to_string()));
+    }
 }
 
 fn ensure_body_heading(body: &str, title: &Option<String>) -> String {
@@ -252,7 +317,11 @@ fn extract_filename(metadata: &okf::Frontmatter, max_len: usize) -> Option<Strin
 }
 
 /// Writes optional intermediate artifacts for debugging and review workflows.
-pub fn write_intermediate_artifacts(root: &Path, base_name: &str, cooked: &CookArtifacts) -> Result<Vec<PathBuf>> {
+pub fn write_intermediate_artifacts(
+    root: &Path,
+    base_name: &str,
+    cooked: &CookArtifacts,
+) -> Result<Vec<PathBuf>> {
     let out_dir = resolve_from_root(root, Path::new(".kb/intermediate"));
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
@@ -293,8 +362,8 @@ fn load_cook_system_prompt(root: &Path, config: &Config) -> Result<LoadedCookPro
         });
     }
 
-    let prompt_path = resolve_from_root(root, Path::new(".kb/prompts"))
-        .join(format!("{}.md", name));
+    let prompt_path =
+        resolve_from_root(root, Path::new(".kb/prompts")).join(format!("{}.md", name));
 
     if !prompt_path.exists() {
         return Ok(LoadedCookPrompt {
@@ -327,8 +396,9 @@ fn load_cook_system_prompt(root: &Path, config: &Config) -> Result<LoadedCookPro
 
 #[cfg(test)]
 mod tests {
-    use super::load_cook_system_prompt;
+    use super::{ensure_generated, ensure_status_draft, load_cook_system_prompt};
     use crate::config::Config;
+    use okf::Value;
 
     #[test]
     fn loads_named_cook_prompt_when_present() {
@@ -339,8 +409,7 @@ mod tests {
             .expect("prompt file should be written");
 
         let cfg = Config::default();
-        let got = load_cook_system_prompt(root.path(), &cfg)
-            .expect("prompt load should succeed");
+        let got = load_cook_system_prompt(root.path(), &cfg).expect("prompt load should succeed");
         assert_eq!(got.prompt_name, "cook-default");
         assert_eq!(got.system_prompt.as_deref(), Some("hello prompt"));
         assert_eq!(
@@ -357,11 +426,55 @@ mod tests {
     fn returns_none_when_prompt_is_missing() {
         let root = tempfile::tempdir().expect("temp dir should be created");
         let cfg = Config::default();
-        let got = load_cook_system_prompt(root.path(), &cfg)
-            .expect("prompt load should succeed");
+        let got = load_cook_system_prompt(root.path(), &cfg).expect("prompt load should succeed");
         assert_eq!(got.prompt_name, "cook-default");
         assert!(got.system_prompt.is_none());
         assert!(got.prompt_file_path.is_none());
         assert!(got.expected_prompt_path.is_some());
+    }
+
+    #[test]
+    fn ensure_generated_records_okf_metadata_agent_actor() {
+        let mut fm = okf::Frontmatter::new();
+        ensure_generated(&mut fm);
+        let generated = fm.get("generated").unwrap().as_mapping().unwrap();
+        assert_eq!(
+            generated.get("by").and_then(|v| v.as_str()),
+            Some("okf-metadata-agent/1.0")
+        );
+        assert!(generated.get("at").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[test]
+    fn ensure_generated_preserves_existing() {
+        let mut fm = okf::Frontmatter::new();
+        let mut by = okf::yaml::Mapping::new();
+        by.insert("by".to_string(), Value::String("human:alice".to_string()));
+        fm.set("generated", Value::Mapping(by));
+        ensure_generated(&mut fm);
+        assert_eq!(
+            fm.get("generated")
+                .unwrap()
+                .as_mapping()
+                .unwrap()
+                .get("by")
+                .and_then(|v| v.as_str()),
+            Some("human:alice")
+        );
+    }
+
+    #[test]
+    fn ensure_status_draft_stamps_fresh_metadata() {
+        let mut fm = okf::Frontmatter::new();
+        ensure_status_draft(&mut fm);
+        assert_eq!(fm.get("status").and_then(|v| v.as_str()), Some("draft"));
+    }
+
+    #[test]
+    fn ensure_status_draft_preserves_existing_status() {
+        let mut fm = okf::Frontmatter::new();
+        fm.set("status", Value::String("stable".to_string()));
+        ensure_status_draft(&mut fm);
+        assert_eq!(fm.get("status").and_then(|v| v.as_str()), Some("stable"));
     }
 }

@@ -12,7 +12,11 @@ pub fn get_string_list(fm: &okf::Frontmatter, key: &str) -> Vec<String> {
             .filter_map(|v| match *v {
                 Value::String(ref s) => {
                     let t = s.trim().to_string();
-                    if t.is_empty() { None } else { Some(t) }
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
                 }
                 _ => v.as_display_string().map(|s| {
                     let t = s.trim().to_string();
@@ -25,7 +29,11 @@ pub fn get_string_list(fm: &okf::Frontmatter, key: &str) -> Vec<String> {
             .as_display_string()
             .map(|s| {
                 let t = s.trim().to_string();
-                if t.is_empty() { vec![] } else { vec![t] }
+                if t.is_empty() {
+                    vec![]
+                } else {
+                    vec![t]
+                }
             })
             .unwrap_or_default(),
         _ => vec![],
@@ -77,10 +85,46 @@ pub fn get_filename(fm: &okf::Frontmatter) -> Option<String> {
     match fm.get("filename") {
         Some(Value::String(s)) => {
             let t = s.trim().to_string();
-            if t.is_empty() { None } else { Some(t) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
         }
         _ => None,
     }
+}
+
+/// New vocabulary candidates reported by the model, keyed by metadata set.
+///
+/// These are suggestions only: the local script re-checks them against the
+/// controlled vocabulary (OKF metadata-API §5) before persisting anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewTerms {
+    pub tags: Vec<String>,
+    pub topics: Vec<String>,
+    pub technologies: Vec<String>,
+}
+
+/// Extracts `new_terms` from a provider JSON response.
+pub fn new_terms_from_json(json: &serde_json::Value) -> NewTerms {
+    let Some(terms) = json.get("new_terms").and_then(|v| v.as_object()) else {
+        return NewTerms::default();
+    };
+    NewTerms {
+        tags: json_string_array(terms, "tags"),
+        topics: json_string_array(terms, "topics"),
+        technologies: json_string_array(terms, "technologies"),
+    }
+}
+
+/// Removes transient model-only fields (`filename`, `new_terms`) that must not
+/// be persisted into the YAML frontmatter per the OKF metadata-API spec (§4).
+pub fn strip_transient_fields(fm: &mut okf::Frontmatter) {
+    let mut map = fm.clone().into_mapping();
+    map.remove("filename");
+    map.remove("new_terms");
+    *fm = okf::Frontmatter::from_mapping(map);
 }
 
 pub fn build_frontmatter(
@@ -256,7 +300,11 @@ fn json_string_array(obj: &serde_json::Map<String, serde_json::Value>, key: &str
             .collect(),
         Some(serde_json::Value::String(s)) => {
             let t = s.trim().to_string();
-            if t.is_empty() { vec![] } else { vec![t] }
+            if t.is_empty() {
+                vec![]
+            } else {
+                vec![t]
+            }
         }
         _ => vec![],
     }
@@ -375,10 +423,9 @@ mod tests {
 
     #[test]
     fn frontmatter_from_json_handles_null_values() {
-        let json: serde_json::Value = serde_json::from_str(
-            r#"{"type":null,"title":"Test","description":null,"tags":null}"#,
-        )
-        .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"type":null,"title":"Test","description":null,"tags":null}"#)
+                .unwrap();
         let fm = frontmatter_from_json(&json).expect("should parse nulls");
         assert!(get_doc_type(&fm).is_none());
         assert_eq!(get_title(&fm).as_deref(), Some("Test"));
@@ -402,5 +449,47 @@ mod tests {
         assert!(yaml.contains("title: Title"));
         assert!(yaml.contains("tags:"));
         assert!(yaml.contains("- rust"));
+    }
+
+    #[test]
+    fn new_terms_from_json_extracts_candidates() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"type":"Note","new_terms":{"tags":["dbus"],"topics":[],"technologies":["niri"]}}"#,
+        )
+        .unwrap();
+        let terms = new_terms_from_json(&json);
+        assert_eq!(terms.tags, vec!["dbus"]);
+        assert!(terms.topics.is_empty());
+        assert_eq!(terms.technologies, vec!["niri"]);
+    }
+
+    #[test]
+    fn new_terms_from_json_defaults_when_missing() {
+        let json: serde_json::Value = serde_json::from_str(r#"{"type":"Note"}"#).unwrap();
+        let terms = new_terms_from_json(&json);
+        assert!(terms.tags.is_empty());
+        assert!(terms.topics.is_empty());
+        assert!(terms.technologies.is_empty());
+    }
+
+    #[test]
+    fn strip_transient_fields_removes_filename_and_new_terms() {
+        let mut fm = build_frontmatter(
+            Some("Note".to_string()),
+            Some("T".to_string()),
+            Some("D".to_string()),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        fm.set("filename", Value::String("my_doc".to_string()));
+        fm.set("new_terms", Value::String("junk".to_string()));
+
+        strip_transient_fields(&mut fm);
+
+        assert!(get_filename(&fm).is_none());
+        assert!(fm.get("new_terms").is_none());
+        assert_eq!(get_title(&fm).as_deref(), Some("T"));
     }
 }

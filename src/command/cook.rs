@@ -1,13 +1,16 @@
-use crate::command::prelude::{CommandContext, MetadataAction, apply_edit, decide_action, print_yaml};
+use crate::command::prelude::{
+    apply_edit, decide_action, print_yaml, CommandContext, MetadataAction,
+};
 use crate::config::Config;
-use crate::document::metadata_block::{missing_required_fields, upsert_metadata_block};
+use crate::document::metadata_block::{missing_required_fields, upsert_metadata_block, NewTerms};
 use crate::pathing::resolve_from_root;
+use crate::pipeline::error::CookError;
 use crate::pipeline::{
-    CookArtifacts, DefaultCleanOperation, DefaultContextOperation, DefaultSuggestOperation,
-    rebuild_index_after_write, run_cook, write_intermediate_artifacts,
+    rebuild_index_after_write, run_cook, write_intermediate_artifacts, CookArtifacts,
+    DefaultCleanOperation, DefaultContextOperation, DefaultSuggestOperation,
 };
 use crate::provider::apply_rules;
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use log::info;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -71,7 +74,28 @@ pub(crate) fn run(ctx: &CommandContext, input: &Path, accept: bool, rewrite: boo
 
     write_output(&cooked, ctx.root(), &cfg, accept, rewrite)?;
     println!("kb-ready markdown: {}", cooked.output_path.display());
+    print_new_terms(&cooked.new_terms);
     Ok(())
+}
+
+/// Prints accepted new vocabulary candidates for manual review per spec §5.
+/// Persisting them is the human's decision; nothing is written automatically.
+fn print_new_terms(new_terms: &NewTerms) {
+    let mut all = Vec::new();
+    all.extend(new_terms.tags.iter().map(|t| format!("tag {{{t}}}")));
+    all.extend(new_terms.topics.iter().map(|t| format!("topic {{{t}}}")));
+    all.extend(
+        new_terms
+            .technologies
+            .iter()
+            .map(|t| format!("technology {{{t}}}")),
+    );
+    if !all.is_empty() {
+        println!(
+            "new vocabulary candidates (add to .kb/vocab/ to persist): {}",
+            all.join(", ")
+        );
+    }
 }
 
 fn handle_decision(
@@ -96,25 +120,32 @@ fn handle_decision(
             cooked.metadata = apply_rules(edited, &cooked.rules);
             let missing = missing_required_fields(&cooked.metadata);
             if !missing.is_empty() {
-                bail!(
-                    "edited metadata is invalid: missing required fields: {}",
-                    missing.join(", ")
-                );
+                return Err(CookError::InvalidSuggestedMetadata {
+                    missing: missing.join(", "),
+                }
+                .into());
             }
-            cooked.final_markdown = upsert_metadata_block(&cooked.clean.markdown, &cooked.metadata)?;
+            cooked.final_markdown =
+                upsert_metadata_block(&cooked.clean.markdown, &cooked.metadata)?;
         }
         MetadataAction::Accept => {}
     }
     Ok(false)
 }
 
-fn write_output(cooked: &CookArtifacts, root: &Path, cfg: &Config, accept: bool, rewrite: bool) -> Result<()> {
+fn write_output(
+    cooked: &CookArtifacts,
+    root: &Path,
+    cfg: &Config,
+    accept: bool,
+    rewrite: bool,
+) -> Result<()> {
     if cooked.output_path.exists() {
         if accept && !rewrite {
-            bail!(
-                "output collision: {} already exists (use --rewrite to overwrite)",
-                cooked.output_path.display()
-            );
+            return Err(CookError::OutputCollision {
+                path: cooked.output_path.clone(),
+            }
+            .into());
         }
 
         if !accept {
@@ -129,8 +160,7 @@ fn write_output(cooked: &CookArtifacts, root: &Path, cfg: &Config, accept: bool,
         .output_path
         .parent()
         .with_context(|| format!("{} has no parent directory", cooked.output_path.display()))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
 
     fs::write(&cooked.output_path, &cooked.final_markdown)
         .with_context(|| format!("failed to write {}", cooked.output_path.display()))?;
