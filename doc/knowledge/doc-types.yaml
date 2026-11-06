@@ -1,0 +1,31 @@
+# Controlled OKF document-type vocabulary.
+# Canonical names are stable and match the allowed `type` values in the
+# metadata schema (Note, Design, Reference, HowTo, Cheatsheet).
+# Aliases map model terminology onto canonicals.
+
+doc-types:
+  - canonical: Note
+    aliases:
+      - note
+      - general-note
+
+  - canonical: Design
+    aliases:
+      - design-doc
+      - design-note
+
+  - canonical: Reference
+    aliases:
+      - reference-note
+
+  - canonical: HowTo
+    aliases:
+      - how-to
+      - guide
+      - tutorial
+      - howto
+
+  - canonical: Cheatsheet
+    aliases:
+      - cheat-sheet
+      - quick-reference

@@ -1,0 +1,66 @@
+# Controlled OKF technology vocabulary.
+# Canonical names are stable.
+#
+# aliases are matching terms, not additional output values.
+
+technologies:
+  - canonical: Linux
+    aliases:
+      - linux
+
+  - canonical: Git
+    aliases:
+      - git
+
+  - canonical: GitHub
+    aliases:
+      - github
+
+  - canonical: GitLab
+    aliases:
+      - gitlab
+
+  - canonical: Bash
+    aliases:
+      - bash
+
+  - canonical: Zsh
+    aliases:
+      - zsh
+
+  - canonical: Python
+    aliases:
+      - python
+
+  - canonical: Rust
+    aliases:
+      - rust
+
+  - canonical: Docker
+    aliases:
+      - docker
+
+  - canonical: Kubernetes
+    aliases:
+      - kubernetes
+      - k8s
+
+  - canonical: systemd
+    aliases:
+      - systemd
+
+  - canonical: OpenCode
+    aliases:
+      - opencode
+
+  - canonical: Codex
+    aliases:
+      - codex
+
+  - canonical: SQLite
+    aliases:
+      - sqlite
+
+  - canonical: JSONL
+    aliases:
+      - jsonl

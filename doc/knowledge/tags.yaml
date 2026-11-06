@@ -1,0 +1,97 @@
+# Controlled OKF tag vocabulary.
+# Canonical names are stable. Add aliases only when they are genuinely equivalent.
+
+tags:
+  - canonical: version-control
+    aliases:
+      - git
+      - github
+      - gitlab
+      - source-control
+
+  - canonical: shell
+    aliases:
+      - bash
+      - zsh
+      - fish
+      - ash
+
+  - canonical: configuration-formats
+    aliases:
+      - json
+      - yaml
+      - toml
+
+  - canonical: authentication
+    aliases:
+      - auth
+      - authentication
+
+  - canonical: api
+    aliases:
+      - api-design
+      - rest-api
+      - http-api
+
+  - canonical: testing
+    aliases:
+      - test
+      - verification
+      - validation
+
+  - canonical: rust-traits
+    aliases:
+      - traits
+
+  - canonical: type-system
+    aliases: []
+
+  - canonical: idiomatic-code
+    aliases: []
+
+  - canonical: closures
+    aliases: []
+
+  - canonical: crash-recovery
+    aliases: []
+
+  - canonical: agent-design
+    aliases: []
+
+  - canonical: durable-execution
+    aliases: []
+
+  - canonical: session-management
+    aliases: []
+
+  - canonical: fault-tolerance
+    aliases: []
+
+  - canonical: watermarking
+    aliases: []
+
+  - canonical: llm
+    aliases:
+      - large-language-model
+
+  - canonical: statistical-detection
+    aliases: []
+
+  - canonical: sampling
+    aliases: []
+
+  - canonical: text-generation
+    aliases: []
+
+  - canonical: attributes
+    aliases: []
+
+  - canonical: memory-layout
+    aliases: []
+
+  - canonical: ffi
+    aliases:
+      - foreign-function-interface
+
+  - canonical: performance
+    aliases: []

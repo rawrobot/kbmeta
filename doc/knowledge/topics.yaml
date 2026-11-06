@@ -1,0 +1,45 @@
+# Controlled OKF topic vocabulary.
+# Canonical names are stable.
+
+topics:
+  - canonical: software-testing
+    aliases:
+      - testing
+      - test-automation
+      - verification
+
+  - canonical: software-architecture
+    aliases:
+      - architecture
+      - system-architecture
+
+  - canonical: linux
+    aliases: []
+
+  - canonical: networking
+    aliases:
+      - network
+      - tcp
+      - http
+
+  - canonical: security
+    aliases:
+      - authentication
+      - authorization
+      - cryptography
+
+  - canonical: development-tools
+    aliases:
+      - developer-tools
+      - tooling
+
+  - canonical: programming-languages
+    aliases: []
+
+  - canonical: software-engineering
+    aliases: []
+
+  - canonical: ai-ml
+    aliases:
+      - artificial-intelligence
+      - machine-learning

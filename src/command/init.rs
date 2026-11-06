@@ -1,6 +1,6 @@
-use crate::command::prelude::{CommandContext, prompt_yn};
+use crate::command::prelude::{prompt_yn, CommandContext};
 use crate::config::Config;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -18,9 +18,42 @@ pub(crate) fn run(ctx: &CommandContext) -> Result<()> {
 
     Config::write_default_with(ctx.root(), ctx.config_override())?;
     ensure_default_cook_prompt(ctx.root())?;
+    ensure_vocab(ctx.root())?;
     let _conn = ctx.open_db()?;
 
     println!("Initialized kbmeta state in {}", kb_dir.display());
+    Ok(())
+}
+
+/// Copies the controlled vocabularies from `doc/knowledge` into `.kb/vocab`
+/// when present. Missing source files are skipped silently.
+fn ensure_vocab(root: &Path) -> Result<()> {
+    use crate::vocabulary::{VocabKind, VOCAB_SOURCE_DIR, VOCAB_SUBDIR};
+
+    let source_dir = crate::pathing::resolve_from_root(root, Path::new(VOCAB_SOURCE_DIR));
+    let kb_vocab_dir = crate::config::Config::kb_dir(root).join(VOCAB_SUBDIR);
+
+    for kind in [
+        VocabKind::Tags,
+        VocabKind::Topics,
+        VocabKind::Technologies,
+        VocabKind::Languages,
+        VocabKind::DocTypes,
+    ] {
+        let src = source_dir.join(kind.filename());
+        if !src.exists() {
+            continue;
+        }
+        fs::create_dir_all(&kb_vocab_dir)
+            .with_context(|| format!("failed to create {}", kb_vocab_dir.display()))?;
+        let dst = kb_vocab_dir.join(kind.filename());
+        if dst.exists() {
+            continue;
+        }
+        fs::copy(&src, &dst)
+            .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
+    }
+
     Ok(())
 }
 
@@ -33,7 +66,10 @@ fn should_rewrite_kb_dir(kb_dir: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    prompt_yn(&format!("{} already exists. Rewrite existing .kb folder?", kb_dir.display()))
+    prompt_yn(&format!(
+        "{} already exists. Rewrite existing .kb folder?",
+        kb_dir.display()
+    ))
 }
 
 fn ensure_default_cook_prompt(root: &Path) -> Result<()> {
@@ -50,5 +86,5 @@ fn ensure_default_cook_prompt(root: &Path) -> Result<()> {
 }
 
 fn default_cook_prompt() -> &'static str {
-    "You are preparing metadata for a knowledge-base markdown document.\n\nRules:\n- Return JSON only.\n- Allowed keys only: type, title, description, tags, topics, technologies, languages.\n- Use arrays of strings for tags/topics/technologies/languages.\n- Keep values concise and technical.\n- Normalize tags to lowercase kebab-case (no spaces).\n- Do not include markdown, comments, or explanations.\n- Prefer a specific, stable title suitable for a KB document.\n- Description should be one sentence and factual.\n\nQuality checks:\n- type must be non-empty.\n- title must be non-empty.\n- description must be non-empty.\n- Drop empty items from arrays.\n- Avoid duplicate values (case-insensitive).\n"
+    include_str!("../prompts/default.md")
 }
