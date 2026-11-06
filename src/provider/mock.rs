@@ -1,5 +1,5 @@
-use crate::document::metadata_block::build_frontmatter;
-use crate::provider::r#trait::{MetadataProvider, SuggestionRules};
+use crate::document::metadata_block::{build_frontmatter, NewTerms};
+use crate::provider::r#trait::{MetadataProvider, Suggestion, SuggestionRules};
 use anyhow::Result;
 use okf::Value;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::path::Path;
 pub struct MockMetadataProvider;
 
 impl MetadataProvider for MockMetadataProvider {
-    fn suggest(&self, path: &Path, content: &str, rules: &SuggestionRules) -> Result<okf::Frontmatter> {
+    fn suggest(&self, path: &Path, content: &str, rules: &SuggestionRules) -> Result<Suggestion> {
         let title = content
             .lines()
             .find_map(|line| line.strip_prefix("# ").map(str::trim).map(str::to_string))
@@ -51,15 +51,32 @@ impl MetadataProvider for MockMetadataProvider {
 
         let filename = title
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect::<String>();
-        let filename = filename
-            .trim_matches(|c| c == '_' || c == '-')
-            .to_string();
+        let filename = filename.trim_matches(|c| c == '_' || c == '-').to_string();
         if !filename.is_empty() {
             fm.set("filename", Value::String(filename));
         }
 
-        Ok(fm)
+        // Deterministic new-term candidates: report a genuinely new tag when
+        // the document mentions "dbus" but no vocab entry covers it, plus an
+        // already-known term so the pipeline re-check has something to reject.
+        let mut new_terms = NewTerms::default();
+        let lowered = content.to_ascii_lowercase();
+        if lowered.contains("dbus") {
+            new_terms.tags.push("dbus".to_string());
+        }
+        new_terms.tags.push("draft".to_string());
+
+        Ok(Suggestion {
+            metadata: fm,
+            new_terms,
+        })
     }
 }

@@ -58,7 +58,7 @@ impl Default for CookConfig {
 /// Configuration for selecting and calling metadata providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    /// Provider kind: `mock` or `openai-api` (legacy alias: `nvidia`).
+    /// Provider kind: `mock`, `openai-api`, or `nvidia`.
     pub kind: String,
     /// Endpoint URL for chat-completions style APIs.
     pub endpoint: String,
@@ -78,6 +78,19 @@ pub struct ProviderConfig {
     /// Maximum tokens in the provider response. Defaults to 1024.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// NVIDIA reasoning budget (`reasoning_budget`). Only honored by the
+    /// `nvidia` provider. Recommended to exceed `max_tokens`.
+    #[serde(default)]
+    pub reasoning_budget: Option<u32>,
+    /// NVIDIA `chat_template_kwargs.enable_thinking`. Only honored by the
+    /// `nvidia` provider.
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
+    /// When true, OpenAI-compatible providers request Structured Outputs /
+    /// JSON Schema (`response_format: json_schema`) with the OKF metadata
+    /// schema. NVIDIA NIM does not support it and falls back to `json_object`.
+    #[serde(default = "default_structured_output")]
+    pub structured_output: bool,
 }
 
 impl Default for ProviderConfig {
@@ -91,6 +104,9 @@ impl Default for ProviderConfig {
             temperature: None,
             top_p: None,
             max_tokens: None,
+            reasoning_budget: None,
+            enable_thinking: None,
+            structured_output: default_structured_output(),
         }
     }
 }
@@ -121,6 +137,10 @@ fn default_cook_max_filename_len() -> usize {
 
 fn default_cook_output_dir() -> PathBuf {
     PathBuf::from("knowledge/staging")
+}
+
+fn default_structured_output() -> bool {
+    false
 }
 
 impl Config {
@@ -174,8 +194,7 @@ impl Config {
         }
         let content = toml::to_string_pretty(&Self::default())
             .with_context(|| "failed to serialize default config")?;
-        fs::write(&path, content)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
 }

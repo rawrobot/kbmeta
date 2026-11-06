@@ -1,12 +1,25 @@
-use crate::document::Document;
-use crate::document::metadata_block::{get_languages, get_technologies, get_topics, set_languages, set_technologies, set_topics};
+use crate::document::metadata_block::{
+    get_languages, get_technologies, get_topics, set_languages, set_technologies, set_topics,
+    NewTerms,
+};
+use crate::vocabulary::{VocabKind, Vocabulary};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 const MAX_TAGS: usize = 10;
 const MAX_TOPICS: usize = 5;
 
-/// Canonical vocabulary and defaults learned from existing KB metadata.
+/// A provider suggestion: the frontmatter to persist plus any vocabulary
+/// candidates the model surfaced in `new_terms` (OKF metadata-API §4).
+#[derive(Debug, Clone)]
+pub struct Suggestion {
+    /// Canonicalized frontmatter ready for persistence.
+    pub metadata: okf::Frontmatter,
+    /// Model-reported vocabulary candidates, already re-checked by the caller.
+    pub new_terms: NewTerms,
+}
+
+/// Canonical vocabulary and defaults used to normalize provider output.
 #[derive(Debug, Clone, Default)]
 pub struct SuggestionRules {
     /// Most common document type in the KB.
@@ -15,34 +28,75 @@ pub struct SuggestionRules {
     topics: HashMap<String, String>,
     technologies: HashMap<String, String>,
     languages: HashMap<String, String>,
+    doc_types: HashMap<String, String>,
+    /// Rendered tag/topic/technology vocabulary blocks, sent in the user
+    /// message so the model can map aliases onto canonical terms.
+    vocab_text: Option<String>,
 }
 
 impl SuggestionRules {
+    /// Builds rules from a controlled vocabulary.
+    ///
+    /// Sets keyed with `lowercase` canonicalization are emitted in lowercase
+    /// kebab-case. Document types are emitted verbatim (e.g. `HowTo`), since
+    /// the metadata schema's `type` enum matches exactly.
+    pub fn from_vocabulary(vocab: &Vocabulary, preferred_doc_type: Option<String>) -> Self {
+        Self {
+            preferred_doc_type,
+            tags: vocab_map(vocab, VocabKind::Tags),
+            topics: vocab_map(vocab, VocabKind::Topics),
+            technologies: vocab_map(vocab, VocabKind::Technologies),
+            languages: vocab_map(vocab, VocabKind::Languages),
+            doc_types: vocab_map(vocab, VocabKind::DocTypes),
+            vocab_text: Some(vocab.render_vocab_blocks()),
+        }
+    }
+
+    /// The vocab blocks for the user message, if rules came from a vocabulary.
+    pub fn vocab_text(&self) -> Option<&str> {
+        self.vocab_text.as_deref()
+    }
+
     /// Returns canonical tag value based on KB vocabulary, if known.
     pub fn canonical_tag(&self, value: &str) -> String {
-        normalize_tag(&canonicalize_with_map(value, &self.tags))
+        normalize_kebab(&canonicalize_with_map(value, &self.tags))
     }
 
     /// Returns canonical topic value based on KB vocabulary, if known.
     pub fn canonical_topic(&self, value: &str) -> String {
-        canonicalize_with_map(value, &self.topics)
+        normalize_kebab(&canonicalize_with_map(value, &self.topics))
     }
 
     /// Returns canonical technology value based on KB vocabulary, if known.
     pub fn canonical_technology(&self, value: &str) -> String {
-        canonicalize_with_map(value, &self.technologies)
+        normalize_kebab(&canonicalize_with_map(value, &self.technologies))
     }
 
     /// Returns canonical language value based on KB vocabulary, if known.
     pub fn canonical_language(&self, value: &str) -> String {
-        canonicalize_with_map(value, &self.languages)
+        normalize_kebab(&canonicalize_with_map(value, &self.languages))
     }
+
+    /// Returns canonical document type based on KB vocabulary, emitted verbatim
+    /// (no kebab normalization), if known.
+    pub fn canonical_doc_type(&self, value: &str) -> String {
+        canonicalize_with_map(value, &self.doc_types)
+    }
+}
+
+fn vocab_map(vocab: &Vocabulary, kind: VocabKind) -> HashMap<String, String> {
+    vocab.canonical_map(kind).clone()
 }
 
 /// Provider abstraction for generating metadata suggestions from document content.
 pub trait MetadataProvider {
     /// Returns a metadata suggestion for one Markdown document.
-    fn suggest(&self, path: &Path, content: &str, rules: &SuggestionRules) -> anyhow::Result<okf::Frontmatter>;
+    fn suggest(
+        &self,
+        path: &Path,
+        content: &str,
+        rules: &SuggestionRules,
+    ) -> anyhow::Result<Suggestion>;
 
     /// Returns a metadata suggestion with optional system-prompt override.
     fn suggest_with_system_prompt(
@@ -51,67 +105,24 @@ pub trait MetadataProvider {
         content: &str,
         rules: &SuggestionRules,
         system_prompt: Option<&str>,
-    ) -> anyhow::Result<okf::Frontmatter> {
+    ) -> anyhow::Result<Suggestion> {
         let _ = system_prompt;
         self.suggest(path, content, rules)
     }
 }
 
-/// Builds suggestion rules from existing KB documents.
-pub fn derive_rules(documents: &[Document], target_path: &Path) -> SuggestionRules {
-    let mut rules = SuggestionRules::default();
-    let mut type_counts: HashMap<String, usize> = HashMap::new();
-    let mut type_canonical: HashMap<String, String> = HashMap::new();
-
-    for doc in documents {
-        if doc.path == target_path {
-            continue;
-        }
-
-        let Some(metadata) = &doc.metadata else {
-            continue;
-        };
-
-        if let Some(doc_type) = metadata.type_().map(|cow| {
-            let t = cow.trim().to_string();
-            t
-        }).filter(|x| !x.is_empty()) {
-            let key = doc_type.to_ascii_lowercase();
-            *type_counts.entry(key).or_insert(0) += 1;
-            type_canonical
-                .entry(doc_type.to_ascii_lowercase())
-                .or_insert_with(|| doc_type);
-        }
-
-        for tag in &metadata.tags() {
-            index_vocab(&mut rules.tags, tag);
-        }
-        for topic in &get_topics(metadata) {
-            index_vocab(&mut rules.topics, topic);
-        }
-        for technology in &get_technologies(metadata) {
-            index_vocab(&mut rules.technologies, technology);
-        }
-        for language in &get_languages(metadata) {
-            index_vocab(&mut rules.languages, language);
-        }
-    }
-
-    if let Some((winner, _)) = type_counts.into_iter().max_by_key(|(_, count)| *count) {
-        rules.preferred_doc_type = type_canonical.get(&winner).cloned().or(Some(winner));
-    }
-
-    rules
-}
-
-/// Applies KB-derived canonicalization rules to provider output.
+/// Applies canonicalization rules to provider output, using the controlled
+/// vocabulary in `rules`. Set-valued fields are lowered to lowercase kebab-case;
+/// the document type is emitted verbatim through the doc-type vocabulary.
 pub fn apply_rules(mut metadata: okf::Frontmatter, rules: &SuggestionRules) -> okf::Frontmatter {
-    if metadata.type_()
-        .map(|cow| cow.trim().is_empty())
-        .unwrap_or(true)
-    {
-        if let Some(preferred) = &rules.preferred_doc_type {
-            metadata.set("type", okf::Value::String(preferred.clone()));
+    match metadata.type_().map(|cow| cow.trim().to_string()) {
+        Some(t) if !t.is_empty() => {
+            metadata.set("type", okf::Value::String(rules.canonical_doc_type(&t)));
+        }
+        _ => {
+            if let Some(preferred) = &rules.preferred_doc_type {
+                metadata.set("type", okf::Value::String(preferred.clone()));
+            }
         }
     }
 
@@ -141,15 +152,6 @@ pub fn apply_rules(mut metadata: okf::Frontmatter, rules: &SuggestionRules) -> o
     set_languages(&mut metadata, languages);
 
     metadata
-}
-
-fn index_vocab(map: &mut HashMap<String, String>, value: &str) {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    map.entry(trimmed.to_ascii_lowercase())
-        .or_insert_with(|| trimmed.to_string());
 }
 
 fn canonicalize_with_map(value: &str, map: &HashMap<String, String>) -> String {
@@ -190,7 +192,7 @@ fn canonicalize_values(values: &[String], canonicalize: impl Fn(&str) -> String)
     out
 }
 
-fn normalize_tag(value: &str) -> String {
+fn normalize_kebab(value: &str) -> String {
     let mut out = String::new();
     let mut sep = false;
 
@@ -231,39 +233,83 @@ fn normalize_tag(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TAGS, SuggestionRules, apply_rules, derive_rules, normalize_tag};
-    use crate::document::Document;
-    use crate::document::metadata_block::{build_frontmatter, get_doc_type, get_title, get_description};
-    use std::path::PathBuf;
+    use super::{apply_rules, normalize_kebab, SuggestionRules, MAX_TAGS};
+    use crate::document::metadata_block::{build_frontmatter, get_doc_type};
+    use crate::vocabulary::{VocabKind, Vocabulary};
+    use std::fs;
 
-    fn make_doc(doc_type: &str, tags: Vec<&str>) -> Document {
-        Document {
-            path: PathBuf::from("/tmp/doc.md"),
-            metadata: Some(build_frontmatter(
-                Some(doc_type.to_string()),
-                Some("Title".to_string()),
-                Some("Desc".to_string()),
-                tags.into_iter().map(String::from).collect(),
-                vec![],
-                vec![],
-                vec![],
-            )),
-            content_hash: "abc".to_string(),
-        }
+    fn vocab_with_tags(kind: VocabKind, canonical: &str, aliases: &[&str]) -> Vocabulary {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("doc/knowledge");
+        fs::create_dir_all(&sub).unwrap();
+        let aliases_yaml = aliases
+            .iter()
+            .map(|a| format!("      - {a}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = format!(
+            "{}:\n  - canonical: {canonical}\n    aliases:\n{}\n",
+            kind.key(),
+            aliases_yaml
+        );
+        fs::write(sub.join(kind.filename()), body).unwrap();
+        Vocabulary::load(dir.path())
     }
 
     #[test]
     fn tag_normalization_removes_spaces() {
-        assert_eq!(normalize_tag("Embedded Systems"), "embedded-systems");
-        assert_eq!(normalize_tag("GPU_ACCEL"), "gpu-accel");
-        assert_eq!(normalize_tag("  rust  "), "rust");
+        assert_eq!(normalize_kebab("Embedded Systems"), "embedded-systems");
+        assert_eq!(normalize_kebab("GPU_ACCEL"), "gpu-accel");
+        assert_eq!(normalize_kebab("  rust  "), "rust");
     }
 
     #[test]
     fn tag_normalization_empty_returns_default() {
-        assert_eq!(normalize_tag(""), "tag");
-        assert_eq!(normalize_tag("   "), "tag");
-        assert_eq!(normalize_tag("!@#"), "tag");
+        assert_eq!(normalize_kebab(""), "tag");
+        assert_eq!(normalize_kebab("   "), "tag");
+        assert_eq!(normalize_kebab("!@#"), "tag");
+    }
+
+    #[test]
+    fn from_vocabulary_maps_alias_to_canonical_and_normalizes() {
+        let vocab = vocab_with_tags(VocabKind::Tags, "version-control", &["git", "GitHub"]);
+        let rules = SuggestionRules::from_vocabulary(&vocab, None);
+        assert_eq!(rules.canonical_tag("git"), "version-control");
+        assert_eq!(rules.canonical_tag("GitHub"), "version-control");
+        assert_eq!(rules.canonical_tag("unknown"), "unknown");
+    }
+
+    #[test]
+    fn from_vocabulary_normalizes_technologies_to_kebab() {
+        let vocab = vocab_with_tags(VocabKind::Technologies, "Git", &["git"]);
+        let rules = SuggestionRules::from_vocabulary(&vocab, None);
+        assert_eq!(rules.canonical_technology("git"), "git");
+    }
+
+    #[test]
+    fn doc_type_kept_verbatim_and_alias_mapped() {
+        let vocab = vocab_with_tags(VocabKind::DocTypes, "HowTo", &["tutorial", "how-to"]);
+        let rules = SuggestionRules::from_vocabulary(&vocab, None);
+        assert_eq!(rules.canonical_doc_type("HowTo"), "HowTo");
+        assert_eq!(rules.canonical_doc_type("tutorial"), "HowTo");
+        assert_eq!(rules.canonical_doc_type("unknown-type"), "unknown-type");
+    }
+
+    #[test]
+    fn apply_rules_maps_type_alias_to_canonical_verbatim() {
+        let vocab = vocab_with_tags(VocabKind::DocTypes, "HowTo", &["tutorial"]);
+        let rules = SuggestionRules::from_vocabulary(&vocab, None);
+        let metadata = build_frontmatter(
+            Some("tutorial".to_string()),
+            Some("Title".to_string()),
+            Some("Desc".to_string()),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let out = apply_rules(metadata, &rules);
+        assert_eq!(get_doc_type(&out).as_deref(), Some("HowTo"));
     }
 
     #[test]
@@ -273,8 +319,8 @@ mod tests {
             Some("Title".to_string()),
             Some("Desc".to_string()),
             vec![
-                "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-                "ten", "eleven", "twelve",
+                "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve",
             ]
             .into_iter()
             .map(|s| s.to_string())
@@ -331,48 +377,19 @@ mod tests {
     }
 
     #[test]
-    fn derive_rules_selects_most_common_doc_type() {
-        let docs = vec![
-            make_doc("Note", vec![]),
-            make_doc("Note", vec![]),
-            make_doc("Tutorial", vec![]),
-        ];
-        let rules = derive_rules(&docs, &PathBuf::from("/tmp/other.md"));
-        assert_eq!(rules.preferred_doc_type.as_deref(), Some("Note"));
-    }
-
-    #[test]
-    fn derive_rules_indexes_vocabulary() {
-        let docs = vec![
-            make_doc("Note", vec!["rust", "web"]),
-            make_doc("Note", vec!["rust", "db"]),
-        ];
-        let rules = derive_rules(&docs, &PathBuf::from("/tmp/other.md"));
-        assert_eq!(rules.canonical_tag("rust"), "rust");
-        assert_eq!(rules.canonical_tag("Rust"), "rust");
-    }
-
-    #[test]
-    fn derive_rules_skips_target_document() {
-        let target = PathBuf::from("/tmp/target.md");
-        let docs = vec![
-            make_doc("Tutorial", vec![]),
-            Document {
-                path: target.clone(),
-                metadata: Some(build_frontmatter(
-                    Some("Note".to_string()),
-                    Some("T".to_string()),
-                    Some("D".to_string()),
-                    vec!["unique-tag".to_string()],
-                    vec![],
-                    vec![],
-                    vec![],
-                )),
-                content_hash: "abc".to_string(),
-            },
-        ];
-        let rules = derive_rules(&docs, &target);
-        assert_eq!(rules.preferred_doc_type.as_deref(), Some("Tutorial"));
-        assert_eq!(rules.canonical_tag("unique-tag"), "unique-tag");
+    fn apply_rules_maps_aliases_to_lowercased_canonical() {
+        let vocab = vocab_with_tags(VocabKind::Technologies, "Git", &["git"]);
+        let rules = SuggestionRules::from_vocabulary(&vocab, None);
+        let metadata = build_frontmatter(
+            Some("Note".to_string()),
+            Some("Title".to_string()),
+            Some("Desc".to_string()),
+            vec![],
+            vec![],
+            vec!["git".to_string()],
+            vec![],
+        );
+        let out = apply_rules(metadata, &rules);
+        assert_eq!(super::get_technologies(&out), vec!["git"]);
     }
 }
