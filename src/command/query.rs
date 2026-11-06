@@ -4,9 +4,7 @@ use crate::query::render::{
     ALL_FIELDS, DEFAULT_TABLE_FIELDS, FIELD_PATH, CsvRenderer, FilesRenderer, JsonRenderer,
     MarkdownRenderer, QueryRenderer, QueryRow, TableRenderer,
 };
-use crate::query::signed_filter::{
-    RelationFilterSqlCompiler, RelationSqlConfig, SignedFilterParser, allow_tag_chars,
-};
+use crate::query::filters::MetadataFilters;
 use anyhow::{Context, Result, bail};
 use rusqlite::{ToSql, params_from_iter};
 use std::collections::BTreeSet;
@@ -52,78 +50,15 @@ pub(crate) fn run(root: &Path, args: &QueryArgs) -> Result<()> {
 }
 
 fn build_query(args: &QueryArgs) -> Result<(String, Vec<String>)> {
-    let mut where_parts = Vec::new();
-    let mut binds = Vec::new();
-
-    if let Some(doc_type) = args.doc_type.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        where_parts.push("i.doc_type = ?".to_string());
-        binds.push(doc_type.to_string());
-    }
-
-    if let Some(title) = args.title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        where_parts.push("LOWER(COALESCE(i.title, '')) LIKE LOWER(?)".to_string());
-        binds.push(format!("%{}%", title));
-    }
-
-    append_relation_filter(
-        &mut where_parts,
-        &mut binds,
+    let filters = MetadataFilters::parse(
+        args.doc_type.as_deref(),
+        args.title.as_deref(),
         args.tags.as_deref(),
-        RelationSqlConfig {
-            item_alias: "i",
-            link_table: "document_tags",
-            link_item_fk: "document_id",
-            link_vocab_fk: "tag_id",
-            vocab_table: "tags",
-            vocab_id_col: "id",
-            vocab_value_col: "name",
-        },
-    )?;
-
-    append_relation_filter(
-        &mut where_parts,
-        &mut binds,
         args.topics.as_deref(),
-        RelationSqlConfig {
-            item_alias: "i",
-            link_table: "document_topics",
-            link_item_fk: "document_id",
-            link_vocab_fk: "topic_id",
-            vocab_table: "topics",
-            vocab_id_col: "id",
-            vocab_value_col: "name",
-        },
-    )?;
-
-    append_relation_filter(
-        &mut where_parts,
-        &mut binds,
         args.technologies.as_deref(),
-        RelationSqlConfig {
-            item_alias: "i",
-            link_table: "document_technologies",
-            link_item_fk: "document_id",
-            link_vocab_fk: "technology_id",
-            vocab_table: "technologies",
-            vocab_id_col: "id",
-            vocab_value_col: "name",
-        },
-    )?;
-
-    append_relation_filter(
-        &mut where_parts,
-        &mut binds,
         args.languages.as_deref(),
-        RelationSqlConfig {
-            item_alias: "i",
-            link_table: "document_languages",
-            link_item_fk: "document_id",
-            link_vocab_fk: "language_id",
-            vocab_table: "languages",
-            vocab_id_col: "id",
-            vocab_value_col: "name",
-        },
     )?;
+    let (where_parts, binds) = filters.where_clauses();
 
     let mut sql = String::from(
         "SELECT i.id, i.path, i.title, i.doc_type, i.indexed_at_utc FROM documents i",
@@ -238,27 +173,6 @@ fn parse_fields(fields: Option<&str>, format: QueryFormatArg) -> Result<Vec<Stri
         bail!("--fields did not contain any valid entries");
     }
     Ok(out)
-}
-
-fn append_relation_filter(
-    where_parts: &mut Vec<String>,
-    binds: &mut Vec<String>,
-    expr: Option<&str>,
-    cfg: RelationSqlConfig<'_>,
-) -> Result<()> {
-    let Some(raw) = expr.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(());
-    };
-
-    let parsed = SignedFilterParser
-        .parse(raw, allow_tag_chars)
-        .map_err(|e| anyhow::anyhow!("invalid filter expression: {}", e))?;
-    let (frag, params) = RelationFilterSqlCompiler.compile(&parsed, cfg);
-    if !frag.is_empty() {
-        where_parts.push(frag);
-        binds.extend(params);
-    }
-    Ok(())
 }
 
 fn load_vocab(

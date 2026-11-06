@@ -5,6 +5,7 @@ mod init;
 pub(crate) mod prelude;
 mod query;
 mod scan;
+mod search;
 
 use crate::cli::Command;
 use crate::config::Config;
@@ -54,6 +55,34 @@ pub fn execute(
                 title,
                 format,
                 fields,
+                limit,
+                fail_empty,
+                json,
+            },
+        ),
+        Command::Search {
+            text,
+            doc_type,
+            tags,
+            topics,
+            technologies,
+            languages,
+            title,
+            format,
+            limit,
+            fail_empty,
+            json,
+        } => search::run(
+            root,
+            &search::SearchArgs {
+                text,
+                doc_type,
+                tags,
+                topics,
+                technologies,
+                languages,
+                title,
+                format,
                 limit,
                 fail_empty,
                 json,

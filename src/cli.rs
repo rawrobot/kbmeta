@@ -55,16 +55,16 @@ pub enum Command {
         #[arg(short = 't', long)]
         doc_type: Option<String>,
         /// Tag expression, e.g. "+debug,rust,-wip".
-        #[arg(short = 'g', long = "tag")]
+        #[arg(short = 'g', long = "tag", allow_hyphen_values = true)]
         tags: Option<String>,
         /// Topic expression, e.g. "+rust,concurrency".
-        #[arg(short = 'o', long = "topic")]
+        #[arg(short = 'o', long = "topic", allow_hyphen_values = true)]
         topics: Option<String>,
         /// Technology expression.
-        #[arg(short = 'k', long = "tech")]
+        #[arg(short = 'k', long = "tech", allow_hyphen_values = true)]
         technologies: Option<String>,
         /// Language expression.
-        #[arg(short = 'l', long = "lang")]
+        #[arg(short = 'l', long = "lang", allow_hyphen_values = true)]
         languages: Option<String>,
         /// Case-insensitive title substring match.
         #[arg(short = 'n', long)]
@@ -79,6 +79,43 @@ pub enum Command {
         #[arg(short = 'L', long)]
         limit: Option<usize>,
         /// Return non-zero when no results match.
+        #[arg(long)]
+        fail_empty: bool,
+        /// Shortcut for JSON output (same as --format json).
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+
+    /// Broad relevance search over indexed metadata, optionally constrained by filters.
+    Search {
+        /// Search text; terms are matched across title, description, tags, topics,
+        /// technologies and languages.
+        text: String,
+        /// Restrict to documents of this type (exact match).
+        #[arg(short = 't', long)]
+        doc_type: Option<String>,
+        /// Tag expression, e.g. "+debug,rust,-wip".
+        #[arg(short = 'g', long = "tag", allow_hyphen_values = true)]
+        tags: Option<String>,
+        /// Topic expression, e.g. "+rust,concurrency".
+        #[arg(short = 'o', long = "topic", allow_hyphen_values = true)]
+        topics: Option<String>,
+        /// Technology expression.
+        #[arg(short = 'k', long = "tech", allow_hyphen_values = true)]
+        technologies: Option<String>,
+        /// Language expression.
+        #[arg(short = 'l', long = "lang", allow_hyphen_values = true)]
+        languages: Option<String>,
+        /// Restrict to documents whose title contains this text (case-insensitive).
+        #[arg(short = 'n', long)]
+        title: Option<String>,
+        /// Output format.
+        #[arg(short = 'f', long, value_enum, default_value_t = SearchFormatArg::Files)]
+        format: SearchFormatArg,
+        /// Maximum number of results.
+        #[arg(short = 'L', long, default_value_t = 10)]
+        limit: usize,
+        /// Return non-zero when no documents match.
         #[arg(long)]
         fail_empty: bool,
         /// Shortcut for JSON output (same as --format json).
@@ -119,6 +156,14 @@ pub enum Command {
 pub enum QueryFormatArg {
     Files,
     Csv,
+    Table,
+    Json,
+    Markdown,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum SearchFormatArg {
+    Files,
     Table,
     Json,
     Markdown,

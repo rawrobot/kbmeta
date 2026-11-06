@@ -605,3 +605,58 @@ fn scan_after_init_without_rebuild_reports_missing_metadata() {
     let stdout = stdout_text(&out);
     assert!(stdout.contains("Missing metadata block: 2"));
 }
+
+fn indexed_minimal_workspace() -> tempfile::TempDir {
+    let ws = fixture_to_tempdir("kb_minimal");
+    let init_out = run_kbmeta(ws.path(), &["init"]);
+    assert!(init_out.status.success(), "init failed: {}", stderr_text(&init_out));
+    let index_out = run_kbmeta(ws.path(), &["index"]);
+    assert!(index_out.status.success(), "index failed: {}", stderr_text(&index_out));
+    ws
+}
+
+#[test]
+fn search_json_returns_ranked_identity_fields() {
+    let ws = indexed_minimal_workspace();
+
+    let out = run_kbmeta(ws.path(), &["search", "async rust runtime", "--json"]);
+    assert!(out.status.success(), "search failed: {}", stderr_text(&out));
+    let json: serde_json::Value = serde_json::from_str(&stdout_text(&out)).expect("valid json");
+    let first = &json.as_array().expect("array")[0];
+    assert!(first["path"].as_str().unwrap().ends_with("knowledge/documents/rust-tokio.md"));
+    assert_eq!(first["title"], "Rust Tokio");
+    assert!(first["id"].is_i64());
+    assert!(first["score"].as_f64().unwrap() > 0.0);
+    assert_eq!(first.as_object().unwrap().len(), 4);
+}
+
+#[test]
+fn search_filters_constrain_text_matches() {
+    let ws = indexed_minimal_workspace();
+
+    let out = run_kbmeta(ws.path(), &["search", "rust", "--tag", "-Rust", "--json"]);
+    assert!(out.status.success(), "search failed: {}", stderr_text(&out));
+    assert!(!stdout_text(&out).contains("rust-tokio.md"));
+}
+
+#[test]
+fn search_empty_json_and_fail_empty() {
+    let ws = indexed_minimal_workspace();
+
+    let out = run_kbmeta(ws.path(), &["search", "kubernetes", "--json"]);
+    assert!(out.status.success());
+    assert_eq!(stdout_text(&out).trim(), "[]");
+
+    let out = run_kbmeta(ws.path(), &["search", "kubernetes", "--fail-empty"]);
+    assert!(!out.status.success());
+    assert!(stderr_text(&out).contains("No matching documents found."));
+}
+
+#[test]
+fn search_rejects_invalid_filter_expression() {
+    let ws = indexed_minimal_workspace();
+
+    let out = run_kbmeta(ws.path(), &["search", "git", "--tag", "version control"]);
+    assert!(!out.status.success());
+    assert!(stderr_text(&out).contains("invalid filter expression"));
+}
