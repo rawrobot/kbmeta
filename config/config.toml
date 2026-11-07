@@ -1,0 +1,16 @@
+documents_root = "KB"
+keep_intermediate = false
+
+[cook]
+prompt_name = "metadata-v5"
+max_filename_len = 50
+output_dir = "staging"
+
+[provider]
+kind = "openai-api"          #  llama.cpp is OpenAI-compatible
+endpoint = "http://127.0.0.1:8080/v1/chat/completions"
+model = "~/.local/share/llama/models/Qwen3-4B-Q4_K_M.gguf"
+timeout_seconds = 300
+max_tokens = 32768
+structured_output = false    # llama.cpp: json_object, not json_schema
+
