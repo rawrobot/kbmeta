@@ -463,6 +463,8 @@ Prefer token/word-boundary matching over arbitrary substring matching.
 
 The implementation may initially use SQLite `LIKE` if necessary, provided the resulting behaviour remains deterministic.
 
+Case folding must be Unicode-aware (`über` matches `Über`). The current implementation registers a `kb_lower` SQL function (Rust `to_lowercase`) instead of relying on `LIKE`, which folds ASCII only. Diacritics are not folded. See `doc/features_todo.md` for the FTS5 option.
+
 ---
 
 # 15. Multiple terms

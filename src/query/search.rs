@@ -28,7 +28,8 @@
 //! text ──► tokenize ──► terms ──┐
 //!                               ▼
 //!           one SQL query: every searchable value containing any term
-//!           (LIKE '%term%'), restricted to documents passing the filters
+//!           (instr(kb_lower(value), term) > 0), restricted to documents
+//!           passing the filters
 //!                               │
 //!                               ▼
 //!           per row: classify match (exact word / word prefix / substring)
@@ -98,21 +99,22 @@
 //! # Performance
 //!
 //! A single prepared statement fetches all candidate rows, so there are no
-//! per-document queries (no N+1). The SQL `LIKE` pre-filter removes values that
+//! per-document queries (no N+1). The SQL `kb_lower` pre-filter removes values that
 //! cannot match; precise classification and scoring happen in Rust. The command
 //! never reads Markdown files, scans the filesystem, or calls an LLM.
 //!
 //! # Known limitations
 //!
-//! - SQLite `LIKE` is case-insensitive only for ASCII. A term with non-ASCII
-//!   letters matches stored values only when case agrees exactly with the
-//!   lowercased term (for example `über` will not find `Über`).
+//! - Case folding uses Rust [`str::to_lowercase`] (Unicode-aware, via the
+//!   `kb_lower` SQL function registered by [`search`]), so `über` finds `Über`.
+//!   Diacritics are not folded: `uber` does not find `über`.
 //! - Substring matching is literal: no stemming (`key` ≠ `keys` except by
 //!   prefix), no synonyms, no typo tolerance.
 //! - Weights, factors and stop words are compile-time constants by design.
 
 use crate::query::filters::{DOCUMENT_ALIAS, MetadataFilters};
 use anyhow::{Context, Result};
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, ToSql, params_from_iter};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
@@ -235,8 +237,7 @@ pub struct SearchResult {
 ///
 /// Steps: split on non-alphanumeric characters, lowercase, drop
 /// [`STOP_WORDS`], drop duplicates (first occurrence wins). Output contains
-/// only alphanumeric characters, so it is safe to embed in `LIKE` patterns
-/// after [`escape_like`].
+/// only alphanumeric characters and is bound as a plain SQL parameter.
 ///
 /// ```text
 /// "SSH key usage in Git"          -> ["ssh", "key", "usage", "git"]
@@ -285,23 +286,24 @@ pub fn search(
         return Ok(Vec::new());
     }
 
-    // Candidate query: one `LIKE` per term, OR-ed, so any value containing any
-    // term is returned. Bind order must follow placeholder order in the SQL:
-    // term patterns first, then filter binds appended below.
+    register_kb_lower(conn)?;
+
+    // Candidate query: one substring test per term, OR-ed, so any value
+    // containing any term is returned. `kb_lower` folds case with the same
+    // Unicode rules as `tokenize`, so the SQL pre-filter and the Rust
+    // classification agree. Bind order must follow placeholder order in the
+    // SQL: terms first, then filter binds appended below.
     let (where_parts, mut binds) = filters.where_clauses();
     let mut sql = format!(
         "SELECT d.id, d.path, d.title, f.kind, f.value
          FROM ({FIELD_VALUES_SQL}) f
          JOIN documents d ON d.id = f.doc_id
          WHERE ({})",
-        vec!["f.value LIKE ? ESCAPE '\\'"; terms.len()].join(" OR ")
+        vec!["instr(kb_lower(f.value), ?) > 0"; terms.len()].join(" OR ")
     );
-    let mut like_binds: Vec<String> = terms
-        .iter()
-        .map(|t| format!("%{}%", escape_like(t)))
-        .collect();
-    like_binds.append(&mut binds);
-    let binds = like_binds;
+    let mut term_binds: Vec<String> = terms.clone();
+    term_binds.append(&mut binds);
+    let binds = term_binds;
 
     // Filters are applied as a subquery over `documents` aliased as
     // `DOCUMENT_ALIAS`, because the shared filter SQL references that alias.
@@ -328,8 +330,8 @@ pub fn search(
         })
         .with_context(|| "failed to execute search query")?;
 
-    // Classify every candidate row. `LIKE` only guarantees a raw substring
-    // match; `match_factor` decides exact / prefix / substring precisely.
+    // Classify every candidate row. The SQL test only guarantees a raw
+    // substring match; `match_factor` decides exact / prefix / substring precisely.
     let mut docs: HashMap<i64, Candidate> = HashMap::new();
     for row in rows {
         let (id, path, title, kind, value) = row?;
@@ -352,9 +354,8 @@ pub fn search(
         }
     }
 
-    // Score. A document can reach this point with score 0 when `LIKE`
-    // matched case-insensitively but the lowercased Rust comparison did not
-    // (non-ASCII edge cases); such documents are dropped.
+    // Score. Every candidate has a substring hit, so score is positive;
+    // the `score > 0` guard is defensive.
     let mut results: Vec<SearchResult> = docs
         .into_iter()
         .filter_map(|(id, doc)| {
@@ -419,15 +420,19 @@ fn match_factor(term: &str, value_lower: &str, value_words: &[String]) -> f64 {
     }
 }
 
-/// Escapes `LIKE` wildcards (`%`, `_`) and the escape char itself (`\`).
+/// Registers `kb_lower(text)`: Unicode-aware lowercase via [`str::to_lowercase`].
 ///
-/// Terms from [`tokenize`] are alphanumeric, so this is defensive: it keeps
-/// the pattern literal if tokenization rules ever change. Paired with
-/// `ESCAPE '\'` in the SQL.
-fn escape_like(term: &str) -> String {
-    term.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+/// SQLite's built-in `lower()` and `LIKE` fold ASCII only. Registered per call
+/// because the function lives on the connection; re-registering is cheap and
+/// keeps `search` usable on any connection. NULL in, NULL out.
+fn register_kb_lower(conn: &Connection) -> Result<()> {
+    conn.create_scalar_function(
+        "kb_lower",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| Ok(ctx.get::<Option<String>>(0)?.map(|s| s.to_lowercase())),
+    )
+    .with_context(|| "failed to register kb_lower SQL function")
 }
 
 #[cfg(test)]
@@ -542,5 +547,37 @@ mod tests {
         assert_eq!(results.len(), 1);
         let none = search(&conn, "kubernetes", &SearchFilters::default(), 10).unwrap();
         assert!(none.is_empty());
+    }
+
+    #[test]
+    fn non_ascii_case_is_folded() {
+        let conn = db();
+        conn.execute_batch(
+            "
+            INSERT INTO documents(id, path, title, description, doc_type, content_hash, indexed_at_utc)
+              VALUES (5, 'KB/de/ueber.md', 'Über Ärger', NULL, 'Note', 'h', 't');
+            INSERT INTO tags(id, name) VALUES (4, 'ŁÓDŹ');
+            INSERT INTO document_tags VALUES (5, 4);
+            ",
+        )
+        .unwrap();
+
+        // Exact word in title, typed in either case.
+        for text in ["über", "ÜBER"] {
+            let results = search(&conn, text, &SearchFilters::default(), 10).unwrap();
+            assert_eq!(paths(&results), vec!["KB/de/ueber.md"], "query {text:?}");
+            assert_eq!(results[0].score, 10.0);
+        }
+        // Prefix of a non-ASCII word, and a non-ASCII tag.
+        assert_eq!(
+            paths(&search(&conn, "ärg", &SearchFilters::default(), 10).unwrap()),
+            vec!["KB/de/ueber.md"]
+        );
+        assert_eq!(
+            paths(&search(&conn, "łódź", &SearchFilters::default(), 10).unwrap()),
+            vec!["KB/de/ueber.md"]
+        );
+        // Diacritics are not folded.
+        assert!(search(&conn, "uber", &SearchFilters::default(), 10).unwrap().is_empty());
     }
 }
